@@ -1,0 +1,361 @@
+{
+    "openapi": "3.0.0",
+    "info": {
+        "title": "Respira-CMP API",
+        "description": "API del Sistema de Gestión de Evaluaciones Psicológicas para Serumistas",
+        "contact": {
+            "email": "soporte@colegiomedicoperú.com"
+        },
+        "version": "1.0.0"
+    },
+    "servers": [
+        {
+            "url": "http://localhost:8000",
+            "description": "Servidor Local de Desarrollo"
+        }
+    ],
+    "paths": {
+        "/api/login": {
+            "post": {
+                "tags": [
+                    "Autenticación"
+                ],
+                "summary": "Iniciar sesión",
+                "operationId": "222b2625838e3c57e017987f73598fda",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "required": [
+                                    "nombre_usuario",
+                                    "password"
+                                ],
+                                "properties": {
+                                    "nombre_usuario": {
+                                        "type": "string",
+                                        "example": "admin"
+                                    },
+                                    "password": {
+                                        "type": "string",
+                                        "example": "admin123"
+                                    }
+                                },
+                                "type": "object"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Login exitoso",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "properties": {
+                                        "access_token": {
+                                            "type": "string"
+                                        },
+                                        "token_type": {
+                                            "type": "string",
+                                            "example": "Bearer"
+                                        },
+                                        "user": {
+                                            "type": "object"
+                                        }
+                                    },
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Credenciales incorrectas"
+                    }
+                }
+            }
+        },
+        "/api/logout": {
+            "post": {
+                "tags": [
+                    "Autenticación"
+                ],
+                "summary": "Cerrar sesión",
+                "operationId": "ad65cbbd4e9f201619eae184a5961a98",
+                "responses": {
+                    "200": {
+                        "description": "Sesión cerrada correctamente",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "properties": {
+                                        "message": {
+                                            "type": "string",
+                                            "example": "Sesión cerrada correctamente"
+                                        }
+                                    },
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "No autenticado"
+                    }
+                },
+                "security": [
+                    {
+                        "sanctum": []
+                    }
+                ]
+            }
+        },
+        "/api/user": {
+            "get": {
+                "tags": [
+                    "Autenticación"
+                ],
+                "summary": "Obtener usuario autenticado",
+                "operationId": "36c106b26fadd4d6a44fcc0ce0f17e39",
+                "responses": {
+                    "200": {
+                        "description": "Usuario autenticado con perfil",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "properties": {
+                                        "id": {
+                                            "type": "integer",
+                                            "example": 1
+                                        },
+                                        "nombre_usuario": {
+                                            "type": "string",
+                                            "example": "fuyu"
+                                        },
+                                        "nombre_completo": {
+                                            "type": "string",
+                                            "example": "Fuyu Collantes"
+                                        },
+                                        "perfil": {
+                                            "type": "object"
+                                        }
+                                    },
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "No autenticado"
+                    }
+                },
+                "security": [
+                    {
+                        "sanctum": []
+                    }
+                ]
+            }
+        },
+        "/api/dashboard-data": {
+            "get": {
+                "tags": [
+                    "Dashboard"
+                ],
+                "summary": "Obtener datos del dashboard",
+                "description": "Retorna todas las estadísticas del dashboard: serumistas, evaluaciones, citas, protocolos, alertas",
+                "operationId": "1a22112c4c0b07dc3fefbd7b07628439",
+                "responses": {
+                    "200": {
+                        "description": "Datos del dashboard obtenidos correctamente",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "properties": {
+                                        "estadisticas_generales": {
+                                            "properties": {
+                                                "total_serumistas": {
+                                                    "type": "integer",
+                                                    "example": 2170
+                                                },
+                                                "evaluaciones_totales": {
+                                                    "type": "integer",
+                                                    "example": 2144
+                                                },
+                                                "citas_atendidas": {
+                                                    "type": "integer",
+                                                    "example": 33
+                                                },
+                                                "protocolos_activos": {
+                                                    "type": "integer",
+                                                    "example": 1889
+                                                }
+                                            },
+                                            "type": "object"
+                                        },
+                                        "evaluaciones_por_tipo": {
+                                            "properties": {
+                                                "asq": {
+                                                    "properties": {
+                                                        "total": {
+                                                            "type": "integer",
+                                                            "example": 671
+                                                        },
+                                                        "porcentaje": {
+                                                            "type": "integer",
+                                                            "example": 31
+                                                        }
+                                                    },
+                                                    "type": "object"
+                                                }
+                                            },
+                                            "type": "object"
+                                        },
+                                        "estado_citas": {
+                                            "type": "object"
+                                        },
+                                        "alertas": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "object"
+                                            }
+                                        }
+                                    },
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "No autenticado"
+                    },
+                    "500": {
+                        "description": "Error del servidor"
+                    }
+                },
+                "security": [
+                    {
+                        "sanctum": []
+                    }
+                ]
+            }
+        },
+        "/api/tamizajes": {
+            "get": {
+                "tags": [
+                    "Resultado Tamizaje"
+                ],
+                "summary": "Obtener listado de resultados de tamizaje paginados",
+                "description": "Retorna la lista de serumistas con sus evaluaciones psicológicas. Lógica basada en el sistema anterior de CodeIgniter.",
+                "operationId": "12d57d65e448d318b76c31ecf4f8b1c3",
+                "parameters": [
+                    {
+                        "name": "page",
+                        "in": "query",
+                        "description": "Número de página",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "default": 1
+                        }
+                    },
+                    {
+                        "name": "per_page",
+                        "in": "query",
+                        "description": "Cantidad de registros por página",
+                        "required": false,
+                        "schema": {
+                            "type": "integer",
+                            "default": 15
+                        }
+                    },
+                    {
+                        "name": "search",
+                        "in": "query",
+                        "description": "Buscar por nombre o CMP",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Lista de resultados de tamizaje obtenida exitosamente"
+                    },
+                    "401": {
+                        "description": "No autenticado"
+                    },
+                    "500": {
+                        "description": "Error al obtener resultados de tamizaje"
+                    }
+                },
+                "security": [
+                    {
+                        "sanctum": []
+                    }
+                ]
+            }
+        },
+        "/api/tamizajes/{dni}": {
+            "get": {
+                "tags": [
+                    "Resultado Tamizaje"
+                ],
+                "summary": "Obtener detalle de un tamizaje por DNI",
+                "description": "Retorna el detalle completo de las evaluaciones de un serumista",
+                "operationId": "6026844f8edbe9d70f10a07064ef3523",
+                "parameters": [
+                    {
+                        "name": "dni",
+                        "in": "path",
+                        "description": "DNI del serumista",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Detalle del tamizaje obtenido exitosamente"
+                    },
+                    "404": {
+                        "description": "Serumista no encontrado"
+                    },
+                    "500": {
+                        "description": "Error al obtener detalle"
+                    }
+                },
+                "security": [
+                    {
+                        "sanctum": []
+                    }
+                ]
+            }
+        }
+    },
+    "components": {
+        "securitySchemes": {
+            "sanctum": {
+                "type": "http",
+                "description": "Token de autenticación Sanctum",
+                "bearerFormat": "JWT",
+                "scheme": "bearer"
+            }
+        }
+    },
+    "tags": [
+        {
+            "name": "Autenticación",
+            "description": "Autenticación"
+        },
+        {
+            "name": "Dashboard",
+            "description": "Dashboard"
+        },
+        {
+            "name": "Resultado Tamizaje",
+            "description": "Resultado Tamizaje"
+        }
+    ]
+}
