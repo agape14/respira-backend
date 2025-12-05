@@ -36,7 +36,7 @@ class MicrosoftGraphService
             }
 
             $url = "https://graph.microsoft.com/v1.0/users/{$this->userId}/events";
-            
+
             // Ensure UTC format
             $startDateTime = str_ends_with($startTime, 'Z') ? $startTime : $startTime . 'Z';
             $endDateTime = str_ends_with($endTime, 'Z') ? $endTime : $endTime . 'Z';
@@ -56,31 +56,18 @@ class MicrosoftGraphService
                 'onlineMeetingProvider' => 'teamsForBusiness'
             ];
 
-            $jsonBody = json_encode($body);
+            $response = Http::withHeaders([
+                'Authorization' => 'Bearer ' . $token,
+                'Content-Type' => 'application/json'
+            ])->post($url, $body);
 
-            $ch = curl_init($url);
-            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($ch, CURLOPT_POST, true);
-            curl_setopt($ch, CURLOPT_POSTFIELDS, $jsonBody);
-            curl_setopt($ch, CURLOPT_HTTPHEADER, [
-                'Authorization: Bearer ' . $token,
-                'Content-Type: application/json',
-                'Content-Length: ' . strlen($jsonBody)
-            ]);
-
-            $result = curl_exec($ch);
-            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            $curlError = curl_error($ch);
-            curl_close($ch);
-
-            if ($httpCode >= 200 && $httpCode < 300) {
-                $data = json_decode($result, true);
+            if ($response->successful()) {
+                $data = $response->json();
                 return $data['onlineMeeting']['joinUrl'] ?? null;
             } else {
                 Log::error('Microsoft Graph: Error creating event', [
-                    'status' => $httpCode,
-                    'body' => $result,
-                    'curl_error' => $curlError
+                    'status' => $response->status(),
+                    'body' => $response->body()
                 ]);
                 return null;
             }
@@ -97,7 +84,7 @@ class MicrosoftGraphService
             if (!$token) return null;
 
             $url = "https://graph.microsoft.com/v1.0/users/{$this->userId}/onlineMeetings";
-            
+
             // Ensure UTC format
             $startDateTime = str_ends_with($startTime, 'Z') ? $startTime : $startTime . 'Z';
             $endDateTime = str_ends_with($endTime, 'Z') ? $endTime : $endTime . 'Z';
@@ -108,29 +95,18 @@ class MicrosoftGraphService
                 'subject' => $subject
             ];
 
-            $jsonBody = json_encode($body);
+            $response = Http::withHeaders([
+                'Authorization' => 'Bearer ' . $token,
+                'Content-Type' => 'application/json'
+            ])->post($url, $body);
 
-            $ch = curl_init($url);
-            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($ch, CURLOPT_POST, true);
-            curl_setopt($ch, CURLOPT_POSTFIELDS, $jsonBody);
-            curl_setopt($ch, CURLOPT_HTTPHEADER, [
-                'Authorization: Bearer ' . $token,
-                'Content-Type: application/json',
-                'Content-Length: ' . strlen($jsonBody)
-            ]);
-
-            $result = curl_exec($ch);
-            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            curl_close($ch);
-
-            if ($httpCode >= 200 && $httpCode < 300) {
-                $data = json_decode($result, true);
+            if ($response->successful()) {
+                $data = $response->json();
                 return $data['joinWebUrl'] ?? null;
             } else {
                 Log::error('Microsoft Graph: Error creating online meeting', [
-                    'status' => $httpCode,
-                    'body' => $result
+                    'status' => $response->status(),
+                    'body' => $response->body()
                 ]);
                 return null;
             }
@@ -147,22 +123,16 @@ class MicrosoftGraphService
             if (!$token) return ['success' => false, 'message' => 'No token'];
 
             $url = "https://graph.microsoft.com/v1.0/users/{$this->userId}";
-            
-            $ch = curl_init($url);
-            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($ch, CURLOPT_HTTPHEADER, [
-                'Authorization: Bearer ' . $token,
-                'Content-Type: application/json'
-            ]);
 
-            $result = curl_exec($ch);
-            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            curl_close($ch);
+            $response = Http::withHeaders([
+                'Authorization' => 'Bearer ' . $token,
+                'Content-Type' => 'application/json'
+            ])->get($url);
 
             return [
-                'success' => $httpCode >= 200 && $httpCode < 300,
-                'status' => $httpCode,
-                'data' => json_decode($result, true)
+                'success' => $response->successful(),
+                'status' => $response->status(),
+                'data' => $response->json()
             ];
         } catch (\Exception $e) {
             return ['success' => false, 'message' => $e->getMessage()];
