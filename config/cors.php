@@ -36,6 +36,7 @@ return [
         'http://respira-test.cmp.org.pe',
         'https://respira-test.cmp.org.pe:84',
         'https://respira-test.cmp.org.pe',
+        'https://respira-test.cmp.org.pe',
     ],
 
     'allowed_origins_patterns' => [
