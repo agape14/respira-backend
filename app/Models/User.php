@@ -12,6 +12,11 @@ class User extends Authenticatable
     use HasFactory, Notifiable, HasApiTokens;
 
     /**
+     * Conexión a la base de datos SQL Server
+     */
+    protected $connection = 'sqlsrv';
+
+    /**
      * Disable automatic password rehashing to prevent SQL errors with custom column names.
      */
     protected $rehashPasswordOnLogin = false;

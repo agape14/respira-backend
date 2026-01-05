@@ -58,8 +58,9 @@ class AuthController extends Controller
             ]);
         }
 
-        // Crear token
-        $token = $user->createToken('auth_token')->plainTextToken;
+        // Crear token sin expires_at para evitar problemas con SQL Server
+        // Laravel Sanctum manejará expires_at automáticamente si es null
+        $token = $user->createToken('auth_token', ['*'], null)->plainTextToken;
 
         // Preparar datos del usuario con perfil
         $userData = [

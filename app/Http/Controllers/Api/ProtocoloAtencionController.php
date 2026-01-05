@@ -10,6 +10,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 use Carbon\Carbon;
+use Barryvdh\DomPDF\Facade\Pdf;
 
 class ProtocoloAtencionController extends Controller
 {
@@ -1135,5 +1136,45 @@ class ProtocoloAtencionController extends Controller
             'numero_sesion' => $numero_sesion,
             'numero_cita_global' => $numero_cita_global
         ];
+    }
+
+    /**
+     * Generar PDF del protocolo de intervención
+     * GET /api/protocolos/pdf/{paciente_id}
+     */
+    public function generarPdf($paciente_id)
+    {
+        try {
+            // Obtener datos de la sesión
+            $sesion = SesionUno::where('paciente_id', $paciente_id)->first();
+
+            if (!$sesion) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No se encontraron datos de la sesión'
+                ], 404);
+            }
+
+            // Obtener datos del paciente
+            $paciente = DB::table('usuarios')
+                ->where('id', $paciente_id)
+                ->select('id', DB::raw("CONCAT(nombre, ' ', apellido) as nombre_completo"), 'cmp as dni')
+                ->first();
+
+            $data = [
+                'sesion' => $sesion->toArray(),
+                'paciente' => $paciente
+            ];
+
+            $pdf = Pdf::loadView('pdf.protocolo_intervencion', $data);
+            $pdf->setPaper('A4', 'portrait');
+
+            return $pdf->download("protocolo_intervencion_{$paciente_id}.pdf");
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al generar el PDF: ' . $e->getMessage()
+            ], 500);
+        }
     }
 }

@@ -3,6 +3,7 @@
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
+use Illuminate\Http\Request;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -14,6 +15,10 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
+        // Evitar redirects en APIs cuando el request NO espera JSON (ej. abrir URL en navegador/PowerShell)
+        // En lugar de redirigir a route('login') (que no existe aquí), dejar que responda 401/Unauthenticated.
+        $middleware->redirectGuestsTo(fn (Request $request) => null);
+
         // COMENTADO: Este middleware fuerza autenticación con cookies
         // Si quieres usar Bearer tokens, debe estar comentado
         // $middleware->api(prepend: [

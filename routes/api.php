@@ -4,6 +4,7 @@ use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\CitaController;
 use App\Http\Controllers\Api\DashboardController;
 use App\Http\Controllers\Api\ExternalDashboardController;
+use App\Http\Controllers\Api\ProcesoController;
 use App\Http\Controllers\Api\ResultadoTamizajeController;
 use App\Http\Controllers\Api\ProtocoloAtencionController;
 use App\Http\Controllers\Api\DerivacionController;
@@ -17,6 +18,75 @@ use Illuminate\Support\Facades\DB;
 
 // Rutas públicas de autenticación
 Route::post('/login', [AuthController::class, 'login']);
+
+// DEBUG (solo local): permite probar el DashboardController sin auth para diagnosticar errores de queries
+Route::get('/debug/dashboard-data', function (Request $request, DashboardController $controller) {
+    abort_unless(app()->environment('local'), 404);
+    return $controller->index($request);
+});
+
+Route::get('/debug/derivados-sample', function () {
+    abort_unless(app()->environment('local'), 404);
+    $count = DB::table('derivados')->count();
+    $sample = DB::table('derivados')->select('id', 'paciente_id', 'cita_id', 'tipo', 'fecha')->orderByDesc('id')->limit(10)->get();
+    return response()->json([
+        'count' => $count,
+        'sample' => $sample,
+    ]);
+});
+
+Route::get('/debug/derivaciones-atencion-sample', function () {
+    abort_unless(app()->environment('local'), 404);
+    $count = DB::table('derivaciones_atencion')->count();
+    $sample = DB::table('derivaciones_atencion')->select('id', 'paciente_id', 'entidad', 'tipo_derivacion', 'fecha_atencion', 'fecha_registro')->orderByDesc('id')->limit(10)->get();
+    return response()->json([
+        'count' => $count,
+        'sample' => $sample,
+    ]);
+});
+
+Route::get('/debug/serumistas-counts', function () {
+    abort_unless(app()->environment('local'), 404);
+
+    $remCount = DB::table('serumista_remunerados')->count();
+    $eqCount = DB::table('serumista_equivalentes_remunerados')->count();
+
+    $remModalidades = DB::table('serumista_remunerados')
+        ->selectRaw('TOP 20 MODALIDAD')
+        ->whereNotNull('MODALIDAD')
+        ->groupBy('MODALIDAD')
+        ->get()
+        ->pluck('MODALIDAD');
+
+    $eqModalidades = DB::table('serumista_equivalentes_remunerados')
+        ->selectRaw('TOP 20 MODALIDAD')
+        ->whereNotNull('MODALIDAD')
+        ->groupBy('MODALIDAD')
+        ->get()
+        ->pluck('MODALIDAD');
+
+    return response()->json([
+        'serumista_remunerados' => [
+            'count' => $remCount,
+            'modalidades' => $remModalidades,
+        ],
+        'serumista_equivalentes_remunerados' => [
+            'count' => $eqCount,
+            'modalidades' => $eqModalidades,
+        ],
+    ]);
+});
+
+Route::get('/debug/describe/{table}', function (string $table) {
+    abort_unless(app()->environment('local'), 404);
+    $cols = DB::select("
+        SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_NAME = ?
+        ORDER BY ORDINAL_POSITION
+    ", [$table]);
+    return response()->json($cols);
+});
 
 // DEBUG: Verificar token actual
 Route::get('/debug/verify-token-61', function() {
@@ -314,6 +384,7 @@ Route::middleware(['debug.auth', 'auth:sanctum'])->group(function () {
 
     // Dashboard
     Route::get('/dashboard-data', [DashboardController::class, 'index']);
+    Route::get('/dashboard-filtros', [DashboardController::class, 'filtros']);
 
     // Tamizaje
     Route::get('/tamizajes/exportar-todo', [ResultadoTamizajeController::class, 'exportarTodo']);
@@ -350,6 +421,7 @@ Route::middleware(['debug.auth', 'auth:sanctum'])->group(function () {
     Route::get('/protocolos/{id}', [ProtocoloAtencionController::class, 'show']);
     Route::post('/protocolos/save', [ProtocoloAtencionController::class, 'save']);
     Route::post('/protocolos/finalizar_intervencion', [ProtocoloAtencionController::class, 'finalizarIntervencion']);
+    Route::get('/protocolos/pdf/{paciente_id}', [ProtocoloAtencionController::class, 'generarPdf']);
     Route::post('/protocolos/cancelar', [ProtocoloAtencionController::class, 'cancelar']);
     Route::post('/protocolos/no_presento', [ProtocoloAtencionController::class, 'noPresento']);
 
@@ -390,6 +462,12 @@ Route::middleware(['debug.auth', 'auth:sanctum'])->group(function () {
     Route::put('/configuracion/tokens/{id}', [ConfiguracionController::class, 'updateToken']);
     Route::post('/configuracion/tokens/{id}/renovar', [ConfiguracionController::class, 'renovarToken']);
     Route::delete('/configuracion/tokens/{id}', [ConfiguracionController::class, 'deleteToken']);
+
+    // Configuración (Cortes/Procesos)
+    Route::get('/configuracion/procesos', [ProcesoController::class, 'index']);
+    Route::post('/configuracion/procesos', [ProcesoController::class, 'store']);
+    Route::put('/configuracion/procesos/{id}', [ProcesoController::class, 'update']);
+    Route::delete('/configuracion/procesos/{id}', [ProcesoController::class, 'destroy']);
 
     // Debug routes
     Route::get('/debug/check-data', function() {

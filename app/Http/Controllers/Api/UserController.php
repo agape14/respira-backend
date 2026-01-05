@@ -55,8 +55,8 @@ class UserController extends Controller
                 'estado' => 1,
                 'fecha_creacion' => DB::raw('GETDATE()'),
                 // Campos requeridos por la base de datos (legacy/moodle)
-                'cmp' => '0', 
-                'usuariomoodle' => $request->email, 
+                'cmp' => '0',
+                'usuariomoodle' => $request->email,
                 'idmoodle' => '0'
             ]);
 
@@ -89,7 +89,7 @@ class UserController extends Controller
             $user->nombre_completo = $request->nombre_completo;
             $user->nombre_usuario = $request->email;
             $user->perfil_id = $request->perfil_id;
-            
+
             if ($request->filled('password')) {
                 $user->contrasena = Hash::make($request->password);
             }
@@ -107,7 +107,7 @@ class UserController extends Controller
     }
 
     /**
-     * Eliminar usuario
+     * Cambiar estado del usuario (activar/desactivar)
      */
     public function destroy($id)
     {
@@ -118,17 +118,25 @@ class UserController extends Controller
         }
 
         try {
-            // Soft delete logic or hard delete depending on requirements. 
-            // Given "estado" field exists, we might just want to deactivate, but CRUD usually implies delete.
-            // Let's try hard delete first, or set state to 0 if preferred.
-            // User request says "DELETE /users/{id} (eliminar)".
-            $user->delete();
-            return response()->json(['message' => 'Usuario eliminado correctamente']);
+            // Cambiar el estado al opuesto (toggle)
+            // Esto evita problemas con restricciones de clave foránea
+            $nuevoEstado = $user->estado ? 0 : 1;
+            $user->estado = $nuevoEstado;
+            $user->save();
+
+            $mensaje = $nuevoEstado
+                ? 'Usuario activado correctamente'
+                : 'Usuario desactivado correctamente';
+
+            return response()->json([
+                'message' => $mensaje,
+                'estado' => $nuevoEstado
+            ]);
         } catch (\Exception $e) {
-            return response()->json(['error' => 'Error al eliminar usuario: ' . $e->getMessage()], 500);
+            return response()->json(['error' => 'Error al cambiar estado del usuario: ' . $e->getMessage()], 500);
         }
     }
-    
+
     /**
      * Obtener roles disponibles
      */

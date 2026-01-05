@@ -111,6 +111,7 @@ return [
             'prefix_indexes' => true,
             'options' => [
                 PDO::SQLSRV_ATTR_FORMAT_DECIMALS => true,
+                PDO::ATTR_EMULATE_PREPARES => false,
             ],
             'trust_server_certificate' => env('DB_TRUST_SERVER_CERTIFICATE', 'false'),
             // 'encrypt' => env('DB_ENCRYPT', 'yes'),
