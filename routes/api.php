@@ -377,7 +377,7 @@ Route::get('/debug/test-serumista-con-evaluaciones', function() {
 });
 
 // Rutas protegidas
-Route::middleware(['debug.auth', 'auth:sanctum'])->group(function () {
+Route::middleware(['auth:sanctum'])->group(function () {
     // Autenticación
     Route::get('/user', [AuthController::class, 'getAuthenticatedUser']);
     Route::post('/logout', [AuthController::class, 'logout']);

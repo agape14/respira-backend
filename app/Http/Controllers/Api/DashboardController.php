@@ -103,6 +103,14 @@ class DashboardController extends Controller
      */
     public function index(Request $request)
     {
+        // Verificación temprana de autenticación - responder rápido si no está autenticado
+        if (!$request->user()) {
+            return response()->json([
+                'error' => 'No autenticado',
+                'message' => 'El token de autenticación es inválido o ha expirado'
+            ], 401);
+        }
+
         try {
             // ====================================================================================
             // 1. FILTRADO DE POBLACIÓN (Usuarios/Serumistas)
