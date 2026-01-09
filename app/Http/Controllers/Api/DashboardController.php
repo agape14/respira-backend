@@ -314,18 +314,20 @@ class DashboardController extends Controller
 
             $tamizBase = null;
             if ($canUseTamizMaterialized) {
-                \Illuminate\Support\Facades\Log::info('Dashboard: [PASO 3.1] Usando vista materializada para evaluaciones...');
+                \Illuminate\Support\Facades\Log::info('Dashboard: [PASO 3.1] Usando vista materializada para evaluaciones (OPTIMIZADO: consulta única)...');
 
-                // Evaluaciones por tipo (médicos) usando tabla/vista materializada del dashboard (1 fila por usuario)
-                $tamizBase = DB::table('dashboard_total_medicos_tamizaje');
-                if ($departamento) $tamizBase->where('departamento', $departamento);
-                if ($institucion) $tamizBase->where('institucion', 'LIKE', '%' . $institucion . '%');
-                if ($modalidad === 'REMUNERADO') $tamizBase->where('modalidad', 'REMUNERADOS');
-                if ($modalidad === 'EQUIVALENTE') $tamizBase->where('modalidad', 'EQUIVALENTES');
+                // OPTIMIZACIÓN: Hacer UNA sola consulta con agregaciones condicionales en lugar de 5 COUNTs separados
+                $stepStart = microtime(true);
+
+                $baseQuery = DB::table('dashboard_total_medicos_tamizaje');
+                if ($departamento) $baseQuery->where('departamento', $departamento);
+                if ($institucion) $baseQuery->where('institucion', 'LIKE', '%' . $institucion . '%');
+                if ($modalidad === 'REMUNERADO') $baseQuery->where('modalidad', 'REMUNERADOS');
+                if ($modalidad === 'EQUIVALENTE') $baseQuery->where('modalidad', 'EQUIVALENTES');
 
                 // Aplicar corte: cualquier evaluación dentro del rango
                 if ($dateRange !== null) {
-                    $tamizBase->where(function ($q) use ($dateRange) {
+                    $baseQuery->where(function ($q) use ($dateRange) {
                         $start = $dateRange['start']->format('Y-m-d H:i:s');
                         $end = $dateRange['end']->format('Y-m-d H:i:s');
                         $q->whereBetween('fecha_suicidio_agudo', [$start, $end])
@@ -338,37 +340,54 @@ class DashboardController extends Controller
                     });
                 }
 
-                // Conteo por tipo (usuarios con registro en ese tamizaje)
-                $stepStart = microtime(true);
-                $totalAsq = (clone $tamizBase)
-                    ->where(function ($q) {
-                        $q->where('riesgo_suicida_no_agudo', '!=', 'Sin Registro')
-                          ->orWhereNotNull('fecha_suicidio_agudo')
-                          ->orWhereNotNull('fecha_suicidio_no_agudo');
-                    })
-                    ->count();
-                $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
-                \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 3.1.1] ASQ contado en {$stepElapsed}ms", ['total' => $totalAsq]);
+                // UNA sola consulta con SUM de CASE WHEN para todos los conteos
+                $counts = (clone $baseQuery)
+                    ->selectRaw("
+                        SUM(CASE
+                            WHEN riesgo_suicida_no_agudo != 'Sin Registro'
+                                 OR fecha_suicidio_agudo IS NOT NULL
+                                 OR fecha_suicidio_no_agudo IS NOT NULL
+                            THEN 1 ELSE 0 END) as total_asq,
+                        SUM(CASE WHEN depresion != 'Sin registro' THEN 1 ELSE 0 END) as total_phq,
+                        SUM(CASE WHEN ansiedad != 'Sin registro' THEN 1 ELSE 0 END) as total_gad,
+                        SUM(CASE WHEN alcohol != 'Sin registro' THEN 1 ELSE 0 END) as total_audit,
+                        SUM(CASE WHEN burnout != 'Sin registro' THEN 1 ELSE 0 END) as total_mbi
+                    ")
+                    ->first();
 
-                $stepStart = microtime(true);
-                $totalPhq = (clone $tamizBase)->where('depresion', '!=', 'Sin registro')->count();
-                $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
-                \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 3.1.2] PHQ contado en {$stepElapsed}ms", ['total' => $totalPhq]);
+                $totalAsq = (int)($counts->total_asq ?? 0);
+                $totalPhq = (int)($counts->total_phq ?? 0);
+                $totalGad = (int)($counts->total_gad ?? 0);
+                $totalAudit = (int)($counts->total_audit ?? 0);
+                $totalMbi = (int)($counts->total_mbi ?? 0);
 
-                $stepStart = microtime(true);
-                $totalGad = (clone $tamizBase)->where('ansiedad', '!=', 'Sin registro')->count();
-                $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
-                \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 3.1.3] GAD contado en {$stepElapsed}ms", ['total' => $totalGad]);
+                // Guardar la query base para usar más adelante (reconstruir para estadísticas detalladas)
+                $tamizBase = DB::table('dashboard_total_medicos_tamizaje');
+                if ($departamento) $tamizBase->where('departamento', $departamento);
+                if ($institucion) $tamizBase->where('institucion', 'LIKE', '%' . $institucion . '%');
+                if ($modalidad === 'REMUNERADO') $tamizBase->where('modalidad', 'REMUNERADOS');
+                if ($modalidad === 'EQUIVALENTE') $tamizBase->where('modalidad', 'EQUIVALENTES');
+                if ($dateRange !== null) {
+                    $tamizBase->where(function ($q) use ($dateRange) {
+                        $start = $dateRange['start']->format('Y-m-d H:i:s');
+                        $end = $dateRange['end']->format('Y-m-d H:i:s');
+                        $q->whereBetween('fecha_suicidio_agudo', [$start, $end])
+                            ->orWhereBetween('fecha_suicidio_no_agudo', [$start, $end])
+                            ->orWhereRaw("TRY_CONVERT(datetime2, fecha_depresion, 120) BETWEEN ? AND ?", [$start, $end])
+                            ->orWhereRaw("TRY_CONVERT(datetime2, fecha_ansiedad, 120) BETWEEN ? AND ?", [$start, $end])
+                            ->orWhereRaw("TRY_CONVERT(datetime2, fecha_alcohol, 120) BETWEEN ? AND ?", [$start, $end])
+                            ->orWhereRaw("TRY_CONVERT(datetime2, fecha_burnout, 120) BETWEEN ? AND ?", [$start, $end]);
+                    });
+                }
 
-                $stepStart = microtime(true);
-                $totalAudit = (clone $tamizBase)->where('alcohol', '!=', 'Sin registro')->count();
                 $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
-                \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 3.1.4] AUDIT contado en {$stepElapsed}ms", ['total' => $totalAudit]);
-
-                $stepStart = microtime(true);
-                $totalMbi = (clone $tamizBase)->where('burnout', '!=', 'Sin registro')->count();
-                $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
-                \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 3.1.5] MBI contado en {$stepElapsed}ms", ['total' => $totalMbi]);
+                \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 3.1] Todos los conteos obtenidos en {$stepElapsed}ms (optimizado)", [
+                    'asq' => $totalAsq,
+                    'phq' => $totalPhq,
+                    'gad' => $totalGad,
+                    'audit' => $totalAudit,
+                    'mbi' => $totalMbi
+                ]);
             } else {
                 \Illuminate\Support\Facades\Log::info('Dashboard: [PASO 3.2] Usando tablas base (fallback) para evaluaciones...');
 
