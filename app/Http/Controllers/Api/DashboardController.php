@@ -571,17 +571,34 @@ class DashboardController extends Controller
             // Tamizados por Modalidad
             $stepStart = microtime(true);
             if ($canUseTamizMaterialized) {
+                // OPTIMIZACIÓN: Hacer una sola consulta con GROUP BY en lugar de dos COUNTs separados
                 $tamizCountBase = DB::table('dashboard_total_medicos_tamizaje');
                 if ($departamento) $tamizCountBase->where('departamento', $departamento);
                 if ($institucion) $tamizCountBase->where('institucion', 'LIKE', '%' . $institucion . '%');
-                if ($modalidad === 'REMUNERADO') $tamizCountBase->where('modalidad', 'REMUNERADOS');
-                if ($modalidad === 'EQUIVALENTE') $tamizCountBase->where('modalidad', 'EQUIVALENTES');
 
                 // Aplicar filtro de fecha usando helper
                 $applyDateRangeMultipleColumns($tamizCountBase);
 
-                $tamizadosRemunerados = (clone $tamizCountBase)->where('modalidad', 'REMUNERADOS')->count();
-                $tamizadosEquivalentes = (clone $tamizCountBase)->where('modalidad', 'EQUIVALENTES')->count();
+                // Si hay filtro de modalidad, aplicar directamente
+                if ($modalidad === 'REMUNERADO') {
+                    $tamizCountBase->where('modalidad', 'REMUNERADOS');
+                    $tamizadosRemunerados = $tamizCountBase->count();
+                    $tamizadosEquivalentes = 0;
+                } elseif ($modalidad === 'EQUIVALENTE') {
+                    $tamizCountBase->where('modalidad', 'EQUIVALENTES');
+                    $tamizadosRemunerados = 0;
+                    $tamizadosEquivalentes = $tamizCountBase->count();
+                } else {
+                    // Sin filtro de modalidad: hacer una sola consulta con GROUP BY
+                    $modalidadCounts = $tamizCountBase
+                        ->selectRaw('modalidad, COUNT(*) as count')
+                        ->whereIn('modalidad', ['REMUNERADOS', 'EQUIVALENTES'])
+                        ->groupBy('modalidad')
+                        ->pluck('count', 'modalidad')
+                        ->toArray();
+                    $tamizadosRemunerados = (int)($modalidadCounts['REMUNERADOS'] ?? 0);
+                    $tamizadosEquivalentes = (int)($modalidadCounts['EQUIVALENTES'] ?? 0);
+                }
             } else {
                 // Fallback: usuarios con al menos un tamizaje (union de tablas), luego clasificar por modalidad del padrón
                 $uAsq = DB::table('asq5_responses')->select('user_id')->distinct()->tap(fn ($q) => $applyFilter($q))->tap(fn ($q) => $applyDateRangeNvarchar($q, 'fecha_registro'));
@@ -871,69 +888,75 @@ class DashboardController extends Controller
                 \Illuminate\Support\Facades\Log::info('Dashboard: [PASO 7] Iniciando cálculo de distribuciones estadísticas...');
                 $distribucionesStart = microtime(true);
 
-                // OPTIMIZACIÓN: Hacer UNA consulta para obtener todas las distribuciones en lugar de múltiples clones
-                // Esto evita escanear la tabla múltiples veces
+                // OPTIMIZACIÓN: Usar agregaciones SQL directamente en lugar de traer todos los datos
+                // Esto es mucho más eficiente, especialmente con muchas filas
                 $stepStart = microtime(true);
-                $distribucionesQuery = (clone $tamizBase)
+
+                // Sexo - GROUP BY directo
+                $sexoCounts = (clone $tamizBase)
+                    ->selectRaw('FlagMasculino as sexo, COUNT(*) as count')
+                    ->whereIn('FlagMasculino', ['Masculino', 'Femenino'])
+                    ->groupBy('FlagMasculino')
+                    ->pluck('count', 'sexo')
+                    ->toArray();
+
+                // Edad - GROUP BY directo
+                $edadCounts = (clone $tamizBase)
+                    ->selectRaw('grupo_etareo as grupo, COUNT(*) as cantidad')
+                    ->whereNotNull('grupo_etareo')
+                    ->groupBy('grupo_etareo')
+                    ->pluck('cantidad', 'grupo')
+                    ->toArray();
+
+                // PHQ - GROUP BY directo
+                $phqCounts = (clone $tamizBase)
+                    ->selectRaw('depresion as nivel, COUNT(*) as cantidad')
+                    ->groupBy('depresion')
+                    ->pluck('cantidad', 'nivel')
+                    ->toArray();
+
+                // GAD - GROUP BY directo
+                $gadCounts = (clone $tamizBase)
+                    ->selectRaw('ansiedad as nivel, COUNT(*) as cantidad')
+                    ->groupBy('ansiedad')
+                    ->pluck('cantidad', 'nivel')
+                    ->toArray();
+
+                // AUDIT - GROUP BY directo
+                $auditCounts = (clone $tamizBase)
+                    ->selectRaw('alcohol as nivel, COUNT(*) as cantidad')
+                    ->groupBy('alcohol')
+                    ->pluck('cantidad', 'nivel')
+                    ->toArray();
+
+                // MBI - GROUP BY directo
+                $mbiCounts = (clone $tamizBase)
+                    ->selectRaw('burnout as nivel, COUNT(*) as cantidad')
+                    ->groupBy('burnout')
+                    ->pluck('cantidad', 'nivel')
+                    ->toArray();
+
+                // ASQ - COUNTs condicionales (más eficiente que WHERE individuales)
+                $asqCounts = (clone $tamizBase)
                     ->selectRaw("
-                        FlagMasculino as sexo,
-                        grupo_etareo as grupo_edad,
-                        depresion as phq,
-                        ansiedad as gad,
-                        alcohol as audit,
-                        burnout as mbi,
-                        riesgo_suicida_agudo as rsa,
-                        riesgo_suicida_no_agudo as rsna
+                        SUM(CASE WHEN riesgo_suicida_agudo = 'Sí' THEN 1 ELSE 0 END) as rsa_si,
+                        SUM(CASE WHEN riesgo_suicida_agudo = 'No' THEN 1 ELSE 0 END) as rsa_no,
+                        SUM(CASE WHEN riesgo_suicida_no_agudo = 'Sí' THEN 1 ELSE 0 END) as rsna_si,
+                        SUM(CASE WHEN riesgo_suicida_no_agudo = 'Sin riesgo' THEN 1 ELSE 0 END) as rsna_sin_riesgo
                     ")
-                    ->get();
+                    ->first();
+
+                $analisis_asq = [
+                    'rsa_si' => (int)($asqCounts->rsa_si ?? 0),
+                    'rsa_no' => (int)($asqCounts->rsa_no ?? 0),
+                    'rsna_si' => (int)($asqCounts->rsna_si ?? 0),
+                    'rsna_sin_riesgo' => (int)($asqCounts->rsna_sin_riesgo ?? 0),
+                ];
+
                 $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
-                \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 7.1] Datos de distribuciones obtenidos en {$stepElapsed}ms", ['total_rows' => $distribucionesQuery->count()]);
+                \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 7.1] Agregaciones SQL completadas en {$stepElapsed}ms");
 
-                // Procesar en memoria (mucho más rápido que múltiples consultas SQL)
-                $stepStart = microtime(true);
-                $sexoCounts = [];
-                $edadCounts = [];
-                $phqCounts = [];
-                $gadCounts = [];
-                $auditCounts = [];
-                $mbiCounts = [];
-                $analisis_asq = ['rsa_si' => 0, 'rsa_no' => 0, 'rsna_si' => 0, 'rsna_sin_riesgo' => 0];
-
-                foreach ($distribucionesQuery as $row) {
-                    // Sexo
-                    if (in_array($row->sexo, ['Masculino', 'Femenino'])) {
-                        $sexoCounts[$row->sexo] = ($sexoCounts[$row->sexo] ?? 0) + 1;
-                    }
-                    // Edad
-                    if ($row->grupo_edad) {
-                        $edadCounts[$row->grupo_edad] = ($edadCounts[$row->grupo_edad] ?? 0) + 1;
-                    }
-                    // PHQ
-                    if ($row->phq) {
-                        $phqCounts[$row->phq] = ($phqCounts[$row->phq] ?? 0) + 1;
-                    }
-                    // GAD
-                    if ($row->gad) {
-                        $gadCounts[$row->gad] = ($gadCounts[$row->gad] ?? 0) + 1;
-                    }
-                    // AUDIT
-                    if ($row->audit) {
-                        $auditCounts[$row->audit] = ($auditCounts[$row->audit] ?? 0) + 1;
-                    }
-                    // MBI
-                    if ($row->mbi) {
-                        $mbiCounts[$row->mbi] = ($mbiCounts[$row->mbi] ?? 0) + 1;
-                    }
-                    // ASQ
-                    if ($row->rsa === 'Sí') $analisis_asq['rsa_si']++;
-                    if ($row->rsa === 'No') $analisis_asq['rsa_no']++;
-                    if ($row->rsna === 'Sí') $analisis_asq['rsna_si']++;
-                    if ($row->rsna === 'Sin riesgo') $analisis_asq['rsna_sin_riesgo']++;
-                }
-                $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
-                \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 7.2] Procesamiento en memoria completado en {$stepElapsed}ms");
-
-                // Construir arrays finales
+                // Construir arrays finales para respuesta
                 $distribucion_sexo = [
                     ['name' => 'Masculino', 'value' => (int)($sexoCounts['Masculino'] ?? 0), 'color' => '#3b82f6'],
                     ['name' => 'Femenino', 'value' => (int)($sexoCounts['Femenino'] ?? 0), 'color' => '#ec4899'],
