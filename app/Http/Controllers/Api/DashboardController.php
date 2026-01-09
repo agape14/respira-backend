@@ -528,8 +528,11 @@ class DashboardController extends Controller
             // ====================================================================================
             // 3. ESTADÍSTICAS DETALLADAS POR MODALIDAD - USANDO VISTAS DE LA BASE DE DATOS
             // ====================================================================================
+            \Illuminate\Support\Facades\Log::info('Dashboard: [PASO 5.1] Iniciando estadísticas por modalidad...');
+            $modalidadStart = microtime(true);
 
             // Total de Usuarios por Modalidad (padrón completo)
+            $stepStart = microtime(true);
             $padronBreakdown = DB::table('serumista_equivalentes_remunerados');
             if ($departamento) $padronBreakdown->where('DEPARTAMENTO', $departamento);
             if ($institucion) $padronBreakdown->where('INSTITUCION', 'LIKE', '%' . $institucion . '%');
@@ -538,8 +541,11 @@ class DashboardController extends Controller
 
             $totalRemunerados = (clone $padronBreakdown)->where('MODALIDAD', 'REMUNERADOS')->count();
             $totalEquivalentes = (clone $padronBreakdown)->where('MODALIDAD', 'EQUIVALENTES')->count();
+            $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
+            \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 5.1.1] Padrón por modalidad completado en {$stepElapsed}ms", ['remunerados' => $totalRemunerados, 'equivalentes' => $totalEquivalentes]);
 
             // Usuarios que accedieron (cálculo directo, consistente con filtros)
+            $stepStart = microtime(true);
             $accedieronRemunerados = DB::table('usuarios')
                 ->join('serumista_equivalentes_remunerados', DB::raw('CAST(usuarios.cmp AS VARCHAR)'), '=', DB::raw('CAST(serumista_equivalentes_remunerados.CMP AS VARCHAR)'))
                 ->where('usuarios.estado', 1)
@@ -559,8 +565,11 @@ class DashboardController extends Controller
                 ->when($filteredUserIds, fn ($q) => $q->whereIn('usuarios.id', $filteredUserIds))
                 ->distinct('usuarios.cmp')
                 ->count('usuarios.cmp');
+            $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
+            \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 5.1.2] Usuarios que accedieron completado en {$stepElapsed}ms", ['remunerados' => $accedieronRemunerados, 'equivalentes' => $accedieronEquivalentes]);
 
             // Tamizados por Modalidad
+            $stepStart = microtime(true);
             if ($canUseTamizMaterialized) {
                 $tamizCountBase = DB::table('dashboard_total_medicos_tamizaje');
                 if ($departamento) $tamizCountBase->where('departamento', $departamento);
@@ -597,11 +606,14 @@ class DashboardController extends Controller
                 $tamizadosRemunerados = (int)($byModalidad['REMUNERADOS'] ?? 0);
                 $tamizadosEquivalentes = (int)($byModalidad['EQUIVALENTES'] ?? 0);
             }
+            $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
+            \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 5.1.3] Tamizados por modalidad completado en {$stepElapsed}ms", ['remunerados' => $tamizadosRemunerados, 'equivalentes' => $tamizadosEquivalentes]);
 
             // Citas registradas (total de citas)
             $totalCitasRegistradas = $totalCitas;
 
             // Citas de Intervención Breve atendidas (citas con estado 2 que tienen sesión)
+            $stepStart = microtime(true);
             $citasIntervencionBreveAtendidas = DB::table('citas')
                 ->join('citas_finalizados', 'citas.id', '=', 'citas_finalizados.cita_id')
                 ->where('citas.estado', 2)
@@ -610,6 +622,11 @@ class DashboardController extends Controller
                 })
                 ->tap(fn ($q) => $applyDateRange($q, 'citas.fecha'))
                 ->count();
+            $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
+            \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 5.1.4] Citas intervención breve completado en {$stepElapsed}ms", ['total' => $citasIntervencionBreveAtendidas]);
+
+            $modalidadElapsed = round((microtime(true) - $modalidadStart) * 1000, 2);
+            \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 5.1] Estadísticas por modalidad completadas en {$modalidadElapsed}ms total");
 
             // ====================================================================================
             // 4. DERIVACIONES
@@ -851,30 +868,76 @@ class DashboardController extends Controller
             // (Se calcula más abajo como distribución 1..5 según la lógica de PowerBI)
 
             if ($canUseTamizMaterialized && $tamizBase !== null) {
-                // --------------------------------------------------------------------------------
-                // Distribución por Sexo (tamizados) - tabla/vista materializada
-                // --------------------------------------------------------------------------------
-                $sexoCounts = (clone $tamizBase)
-                    ->selectRaw('FlagMasculino as sexo, COUNT(*) as count')
-                    ->whereIn('FlagMasculino', ['Masculino', 'Femenino'])
-                    ->groupBy('FlagMasculino')
-                    ->pluck('count', 'sexo')
-                    ->toArray();
+                \Illuminate\Support\Facades\Log::info('Dashboard: [PASO 7] Iniciando cálculo de distribuciones estadísticas...');
+                $distribucionesStart = microtime(true);
 
+                // OPTIMIZACIÓN: Hacer UNA consulta para obtener todas las distribuciones en lugar de múltiples clones
+                // Esto evita escanear la tabla múltiples veces
+                $stepStart = microtime(true);
+                $distribucionesQuery = (clone $tamizBase)
+                    ->selectRaw("
+                        FlagMasculino as sexo,
+                        grupo_etareo as grupo_edad,
+                        depresion as phq,
+                        ansiedad as gad,
+                        alcohol as audit,
+                        burnout as mbi,
+                        riesgo_suicida_agudo as rsa,
+                        riesgo_suicida_no_agudo as rsna
+                    ")
+                    ->get();
+                $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
+                \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 7.1] Datos de distribuciones obtenidos en {$stepElapsed}ms", ['total_rows' => $distribucionesQuery->count()]);
+
+                // Procesar en memoria (mucho más rápido que múltiples consultas SQL)
+                $stepStart = microtime(true);
+                $sexoCounts = [];
+                $edadCounts = [];
+                $phqCounts = [];
+                $gadCounts = [];
+                $auditCounts = [];
+                $mbiCounts = [];
+                $analisis_asq = ['rsa_si' => 0, 'rsa_no' => 0, 'rsna_si' => 0, 'rsna_sin_riesgo' => 0];
+
+                foreach ($distribucionesQuery as $row) {
+                    // Sexo
+                    if (in_array($row->sexo, ['Masculino', 'Femenino'])) {
+                        $sexoCounts[$row->sexo] = ($sexoCounts[$row->sexo] ?? 0) + 1;
+                    }
+                    // Edad
+                    if ($row->grupo_edad) {
+                        $edadCounts[$row->grupo_edad] = ($edadCounts[$row->grupo_edad] ?? 0) + 1;
+                    }
+                    // PHQ
+                    if ($row->phq) {
+                        $phqCounts[$row->phq] = ($phqCounts[$row->phq] ?? 0) + 1;
+                    }
+                    // GAD
+                    if ($row->gad) {
+                        $gadCounts[$row->gad] = ($gadCounts[$row->gad] ?? 0) + 1;
+                    }
+                    // AUDIT
+                    if ($row->audit) {
+                        $auditCounts[$row->audit] = ($auditCounts[$row->audit] ?? 0) + 1;
+                    }
+                    // MBI
+                    if ($row->mbi) {
+                        $mbiCounts[$row->mbi] = ($mbiCounts[$row->mbi] ?? 0) + 1;
+                    }
+                    // ASQ
+                    if ($row->rsa === 'Sí') $analisis_asq['rsa_si']++;
+                    if ($row->rsa === 'No') $analisis_asq['rsa_no']++;
+                    if ($row->rsna === 'Sí') $analisis_asq['rsna_si']++;
+                    if ($row->rsna === 'Sin riesgo') $analisis_asq['rsna_sin_riesgo']++;
+                }
+                $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
+                \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 7.2] Procesamiento en memoria completado en {$stepElapsed}ms");
+
+                // Construir arrays finales
                 $distribucion_sexo = [
                     ['name' => 'Masculino', 'value' => (int)($sexoCounts['Masculino'] ?? 0), 'color' => '#3b82f6'],
                     ['name' => 'Femenino', 'value' => (int)($sexoCounts['Femenino'] ?? 0), 'color' => '#ec4899'],
                 ];
-
-                // --------------------------------------------------------------------------------
-                // Distribución por Grupo Etáreo (tamizados)
-                // --------------------------------------------------------------------------------
-                $edadCounts = (clone $tamizBase)
-                    ->selectRaw('grupo_etareo as grupo, COUNT(*) as cantidad')
-                    ->whereNotNull('grupo_etareo')
-                    ->groupBy('grupo_etareo')
-                    ->pluck('cantidad', 'grupo')
-                    ->toArray();
 
                 $edadOrder = ['18-29 años', '30-59 años', '60-64 años', '65-69 años', '70 años a más', 'Menor de 18 años'];
                 $distribucion_edad = [];
@@ -882,10 +945,6 @@ class DashboardController extends Controller
                     if (isset($edadCounts[$g])) $distribucion_edad[] = ['grupo' => $g, 'cantidad' => (int)$edadCounts[$g]];
                 }
 
-                // --------------------------------------------------------------------------------
-                // Gráficos de Riesgo (tamizados) - tabla/vista materializada
-                // --------------------------------------------------------------------------------
-                $phqCounts = (clone $tamizBase)->selectRaw('depresion as nivel, COUNT(*) as cantidad')->groupBy('depresion')->pluck('cantidad', 'nivel')->toArray();
                 $distribucion_phq = [
                     ['nivel' => 'Riesgo alto', 'cantidad' => (int)($phqCounts['Riesgo alto'] ?? 0), 'color' => '#ef4444'],
                     ['nivel' => 'Riesgo moderado', 'cantidad' => (int)($phqCounts['Riesgo moderado'] ?? 0), 'color' => '#f97316'],
@@ -894,7 +953,6 @@ class DashboardController extends Controller
                     ['nivel' => 'Sin registro', 'cantidad' => (int)($phqCounts['Sin registro'] ?? 0), 'color' => '#6b7280'],
                 ];
 
-                $gadCounts = (clone $tamizBase)->selectRaw('ansiedad as nivel, COUNT(*) as cantidad')->groupBy('ansiedad')->pluck('cantidad', 'nivel')->toArray();
                 $distribucion_gad = [
                     ['nivel' => 'Riesgo alto', 'cantidad' => (int)($gadCounts['Riesgo alto'] ?? 0), 'color' => '#ef4444'],
                     ['nivel' => 'Riesgo moderado', 'cantidad' => (int)($gadCounts['Riesgo moderado'] ?? 0), 'color' => '#f97316'],
@@ -903,7 +961,6 @@ class DashboardController extends Controller
                     ['nivel' => 'Sin registro', 'cantidad' => (int)($gadCounts['Sin registro'] ?? 0), 'color' => '#6b7280'],
                 ];
 
-                $auditCounts = (clone $tamizBase)->selectRaw('alcohol as nivel, COUNT(*) as cantidad')->groupBy('alcohol')->pluck('cantidad', 'nivel')->toArray();
                 $distribucion_audit = [
                     ['nivel' => 'Consumo problemático', 'cantidad' => (int)($auditCounts['Consumo problemático'] ?? 0), 'color' => '#ef4444'],
                     ['nivel' => 'Consumo riesgoso', 'cantidad' => (int)($auditCounts['Consumo riesgoso'] ?? 0), 'color' => '#f59e0b'],
@@ -911,7 +968,6 @@ class DashboardController extends Controller
                     ['nivel' => 'Sin registro', 'cantidad' => (int)($auditCounts['Sin registro'] ?? 0), 'color' => '#6b7280'],
                 ];
 
-                $mbiCounts = (clone $tamizBase)->selectRaw('burnout as nivel, COUNT(*) as cantidad')->groupBy('burnout')->pluck('cantidad', 'nivel')->toArray();
                 $distribucion_mbi = [
                     ['nivel' => 'Presencia', 'cantidad' => (int)($mbiCounts['Presencia'] ?? 0), 'color' => '#ef4444'],
                     ['nivel' => 'Ausencia', 'cantidad' => (int)($mbiCounts['Ausencia'] ?? 0), 'color' => '#10b981'],
@@ -926,12 +982,8 @@ class DashboardController extends Controller
                     ['nivel' => '5.SIN REGISTRO', 'cantidad' => (int)($auditCounts['Sin registro'] ?? 0), 'color' => '#6b7280'],
                 ];
 
-                $analisis_asq = [
-                    'rsa_si' => (clone $tamizBase)->where('riesgo_suicida_agudo', 'Sí')->count(),
-                    'rsa_no' => (clone $tamizBase)->where('riesgo_suicida_agudo', 'No')->count(),
-                    'rsna_si' => (clone $tamizBase)->where('riesgo_suicida_no_agudo', 'Sí')->count(),
-                    'rsna_sin_riesgo' => (clone $tamizBase)->where('riesgo_suicida_no_agudo', 'Sin riesgo')->count(),
-                ];
+                $distribucionesElapsed = round((microtime(true) - $distribucionesStart) * 1000, 2);
+                \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 7] Distribuciones estadísticas completadas en {$distribucionesElapsed}ms total");
             } else {
                 // --------------------------------------------------------------------------------
                 // Fallback DEV: sin CMP02 -> usar tablas base + lógica de "último/prioridad por usuario"
