@@ -142,20 +142,59 @@ class DashboardController extends Controller
                 return response()->json($cached);
             }
 
-            // Si no está en caché, calcular los datos
-            \Illuminate\Support\Facades\Log::info('Dashboard: Calculando datos (no en caché)', [
-                'cache_key' => $cacheKey,
-                'filters' => compact('departamento', 'institucion', 'modalidad', 'idProceso')
-            ]);
+            // Usar lock para evitar cálculos concurrentes del mismo caché
+            $lockKey = 'dashboard:lock:' . $cacheKey;
+            $lock = Cache::lock($lockKey, 120); // Lock por 120 segundos máximo
 
-            // Intentar obtener datos del caché (5 minutos de validez)
-            $data = Cache::remember($cacheKey, now()->addMinutes(5), function () use ($request, $departamento, $institucion, $modalidad, $idProceso, $corteLegacy, $startTime) {
-                $calculateStart = microtime(true);
-                $result = $this->fetchDashboardData($request, $departamento, $institucion, $modalidad, $idProceso, $corteLegacy);
-                $calculateElapsed = round((microtime(true) - $calculateStart) * 1000, 2);
-                \Illuminate\Support\Facades\Log::info("Dashboard: Cálculo completado en {$calculateElapsed}ms");
-                return $result;
-            });
+            try {
+                // Intentar obtener el lock (esperar máximo 5 segundos)
+                if ($lock->block(5)) {
+                    // Verificar nuevamente el caché después de obtener el lock (puede que otro proceso ya lo haya calculado)
+                    $cached = Cache::get($cacheKey);
+                    if ($cached !== null) {
+                        $lock->release();
+                        $elapsed = round((microtime(true) - $startTime) * 1000, 2);
+                        \Illuminate\Support\Facades\Log::info("Dashboard: Datos obtenidos del caché después del lock en {$elapsed}ms");
+                        return response()->json($cached);
+                    }
+
+                    // Si no está en caché, calcular los datos
+                    \Illuminate\Support\Facades\Log::info('Dashboard: Calculando datos (no en caché, con lock)', [
+                        'cache_key' => $cacheKey,
+                        'filters' => compact('departamento', 'institucion', 'modalidad', 'idProceso')
+                    ]);
+
+                    // Calcular los datos y guardar en caché
+                    $calculateStart = microtime(true);
+                    $result = $this->fetchDashboardData($request, $departamento, $institucion, $modalidad, $idProceso, $corteLegacy);
+                    $calculateElapsed = round((microtime(true) - $calculateStart) * 1000, 2);
+                    \Illuminate\Support\Facades\Log::info("Dashboard: Cálculo completado en {$calculateElapsed}ms");
+
+                    // Guardar en caché (5 minutos de validez)
+                    Cache::put($cacheKey, $result, now()->addMinutes(5));
+
+                    $lock->release();
+                    $data = $result;
+                } else {
+                    // No se pudo obtener el lock, esperar un poco y volver a intentar obtener del caché
+                    \Illuminate\Support\Facades\Log::warning('Dashboard: No se pudo obtener lock, esperando...', ['cache_key' => $cacheKey]);
+                    sleep(2);
+                    $cached = Cache::get($cacheKey);
+                    if ($cached !== null) {
+                        return response()->json($cached);
+                    }
+                    // Si aún no hay caché, calcular de todas formas
+                    $calculateStart = microtime(true);
+                    $result = $this->fetchDashboardData($request, $departamento, $institucion, $modalidad, $idProceso, $corteLegacy);
+                    $calculateElapsed = round((microtime(true) - $calculateStart) * 1000, 2);
+                    \Illuminate\Support\Facades\Log::info("Dashboard: Cálculo completado sin lock en {$calculateElapsed}ms");
+                    Cache::put($cacheKey, $result, now()->addMinutes(5));
+                    $data = $result;
+                }
+            } catch (\Exception $e) {
+                $lock->release();
+                throw $e;
+            }
 
             $elapsed = round((microtime(true) - $startTime) * 1000, 2);
             \Illuminate\Support\Facades\Log::info("Dashboard: Respuesta enviada en {$elapsed}ms total");
@@ -286,6 +325,25 @@ class DashboardController extends Controller
                 );
             };
 
+            // Helper para aplicar rango de fechas a múltiples columnas NVARCHAR de la vista materializada
+            $applyDateRangeMultipleColumns = function ($q) use ($dateRange) {
+                if ($dateRange === null) return;
+
+                $startStr = $dateRange['start']->format('Y-m-d H:i:s');
+                $endStr = $dateRange['end']->format('Y-m-d H:i:s');
+
+                // Construir condición OR para todas las columnas de fecha
+                // Verificar que TRY_CONVERT no sea NULL antes de comparar
+                $q->where(function ($subQuery) use ($startStr, $endStr) {
+                    $subQuery->whereRaw("TRY_CONVERT(datetime2, fecha_suicidio_agudo, 120) IS NOT NULL AND TRY_CONVERT(datetime2, fecha_suicidio_agudo, 120) BETWEEN ? AND ?", [$startStr, $endStr])
+                            ->orWhereRaw("TRY_CONVERT(datetime2, fecha_suicidio_no_agudo, 120) IS NOT NULL AND TRY_CONVERT(datetime2, fecha_suicidio_no_agudo, 120) BETWEEN ? AND ?", [$startStr, $endStr])
+                            ->orWhereRaw("TRY_CONVERT(datetime2, fecha_depresion, 120) IS NOT NULL AND TRY_CONVERT(datetime2, fecha_depresion, 120) BETWEEN ? AND ?", [$startStr, $endStr])
+                            ->orWhereRaw("TRY_CONVERT(datetime2, fecha_ansiedad, 120) IS NOT NULL AND TRY_CONVERT(datetime2, fecha_ansiedad, 120) BETWEEN ? AND ?", [$startStr, $endStr])
+                            ->orWhereRaw("TRY_CONVERT(datetime2, fecha_alcohol, 120) IS NOT NULL AND TRY_CONVERT(datetime2, fecha_alcohol, 120) BETWEEN ? AND ?", [$startStr, $endStr])
+                            ->orWhereRaw("TRY_CONVERT(datetime2, fecha_burnout, 120) IS NOT NULL AND TRY_CONVERT(datetime2, fecha_burnout, 120) BETWEEN ? AND ?", [$startStr, $endStr]);
+                });
+            };
+
             // Determinar si podemos usar la vista/tabla materializada del dashboard.
             // En local puede fallar por dependencias a servidores/BD externos (ej. CMP02).
             $stepStart = microtime(true);
@@ -319,41 +377,53 @@ class DashboardController extends Controller
                 // OPTIMIZACIÓN: Hacer UNA sola consulta con agregaciones condicionales en lugar de 5 COUNTs separados
                 $stepStart = microtime(true);
 
-                $baseQuery = DB::table('dashboard_total_medicos_tamizaje');
-                if ($departamento) $baseQuery->where('departamento', $departamento);
-                if ($institucion) $baseQuery->where('institucion', 'LIKE', '%' . $institucion . '%');
-                if ($modalidad === 'REMUNERADO') $baseQuery->where('modalidad', 'REMUNERADOS');
-                if ($modalidad === 'EQUIVALENTE') $baseQuery->where('modalidad', 'EQUIVALENTES');
+                // Construir query base desde cero para evitar problemas con parámetros al clonar
+                $countQuery = DB::table('dashboard_total_medicos_tamizaje');
 
-                // Aplicar corte: cualquier evaluación dentro del rango
-                if ($dateRange !== null) {
-                    $baseQuery->where(function ($q) use ($dateRange) {
-                        $start = $dateRange['start']->format('Y-m-d H:i:s');
-                        $end = $dateRange['end']->format('Y-m-d H:i:s');
-                        $q->whereBetween('fecha_suicidio_agudo', [$start, $end])
-                            ->orWhereBetween('fecha_suicidio_no_agudo', [$start, $end])
-                            // fechas en varchar(19) estilo 120
-                            ->orWhereRaw("TRY_CONVERT(datetime2, fecha_depresion, 120) BETWEEN ? AND ?", [$start, $end])
-                            ->orWhereRaw("TRY_CONVERT(datetime2, fecha_ansiedad, 120) BETWEEN ? AND ?", [$start, $end])
-                            ->orWhereRaw("TRY_CONVERT(datetime2, fecha_alcohol, 120) BETWEEN ? AND ?", [$start, $end])
-                            ->orWhereRaw("TRY_CONVERT(datetime2, fecha_burnout, 120) BETWEEN ? AND ?", [$start, $end]);
-                    });
+                // Aplicar filtros básicos
+                if ($departamento) {
+                    $countQuery->where('departamento', $departamento);
+                }
+                if ($institucion) {
+                    $countQuery->where('institucion', 'LIKE', '%' . $institucion . '%');
+                }
+                if ($modalidad === 'REMUNERADO') {
+                    $countQuery->where('modalidad', 'REMUNERADOS');
+                }
+                if ($modalidad === 'EQUIVALENTE') {
+                    $countQuery->where('modalidad', 'EQUIVALENTES');
                 }
 
+                // Aplicar filtro de fecha usando helper
+                $applyDateRangeMultipleColumns($countQuery);
+
                 // UNA sola consulta con SUM de CASE WHEN para todos los conteos
-                $counts = (clone $baseQuery)
-                    ->selectRaw("
-                        SUM(CASE
-                            WHEN riesgo_suicida_no_agudo != 'Sin Registro'
-                                 OR fecha_suicidio_agudo IS NOT NULL
-                                 OR fecha_suicidio_no_agudo IS NOT NULL
-                            THEN 1 ELSE 0 END) as total_asq,
-                        SUM(CASE WHEN depresion != 'Sin registro' THEN 1 ELSE 0 END) as total_phq,
-                        SUM(CASE WHEN ansiedad != 'Sin registro' THEN 1 ELSE 0 END) as total_gad,
-                        SUM(CASE WHEN alcohol != 'Sin registro' THEN 1 ELSE 0 END) as total_audit,
-                        SUM(CASE WHEN burnout != 'Sin registro' THEN 1 ELSE 0 END) as total_mbi
-                    ")
-                    ->first();
+                try {
+                    $counts = $countQuery
+                        ->selectRaw("
+                            SUM(CASE
+                                WHEN riesgo_suicida_no_agudo != 'Sin Registro'
+                                     OR fecha_suicidio_agudo IS NOT NULL
+                                     OR fecha_suicidio_no_agudo IS NOT NULL
+                                THEN 1 ELSE 0 END) as total_asq,
+                            SUM(CASE WHEN depresion != 'Sin registro' THEN 1 ELSE 0 END) as total_phq,
+                            SUM(CASE WHEN ansiedad != 'Sin registro' THEN 1 ELSE 0 END) as total_gad,
+                            SUM(CASE WHEN alcohol != 'Sin registro' THEN 1 ELSE 0 END) as total_audit,
+                            SUM(CASE WHEN burnout != 'Sin registro' THEN 1 ELSE 0 END) as total_mbi
+                        ")
+                        ->first();
+                } catch (\Exception $e) {
+                    \Illuminate\Support\Facades\Log::error('Dashboard: Error en consulta optimizada de conteos', [
+                        'error' => $e->getMessage(),
+                        'sql' => $countQuery->toSql(),
+                        'bindings' => $countQuery->getBindings(),
+                        'date_range' => $dateRange ? [
+                            'start' => $dateRange['start']->format('Y-m-d H:i:s'),
+                            'end' => $dateRange['end']->format('Y-m-d H:i:s')
+                        ] : null
+                    ]);
+                    throw $e;
+                }
 
                 $totalAsq = (int)($counts->total_asq ?? 0);
                 $totalPhq = (int)($counts->total_phq ?? 0);
@@ -367,18 +437,8 @@ class DashboardController extends Controller
                 if ($institucion) $tamizBase->where('institucion', 'LIKE', '%' . $institucion . '%');
                 if ($modalidad === 'REMUNERADO') $tamizBase->where('modalidad', 'REMUNERADOS');
                 if ($modalidad === 'EQUIVALENTE') $tamizBase->where('modalidad', 'EQUIVALENTES');
-                if ($dateRange !== null) {
-                    $tamizBase->where(function ($q) use ($dateRange) {
-                        $start = $dateRange['start']->format('Y-m-d H:i:s');
-                        $end = $dateRange['end']->format('Y-m-d H:i:s');
-                        $q->whereBetween('fecha_suicidio_agudo', [$start, $end])
-                            ->orWhereBetween('fecha_suicidio_no_agudo', [$start, $end])
-                            ->orWhereRaw("TRY_CONVERT(datetime2, fecha_depresion, 120) BETWEEN ? AND ?", [$start, $end])
-                            ->orWhereRaw("TRY_CONVERT(datetime2, fecha_ansiedad, 120) BETWEEN ? AND ?", [$start, $end])
-                            ->orWhereRaw("TRY_CONVERT(datetime2, fecha_alcohol, 120) BETWEEN ? AND ?", [$start, $end])
-                            ->orWhereRaw("TRY_CONVERT(datetime2, fecha_burnout, 120) BETWEEN ? AND ?", [$start, $end]);
-                    });
-                }
+                // Aplicar filtro de fecha usando helper
+                $applyDateRangeMultipleColumns($tamizBase);
 
                 $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
                 \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 3.1] Todos los conteos obtenidos en {$stepElapsed}ms (optimizado)", [
@@ -508,18 +568,8 @@ class DashboardController extends Controller
                 if ($modalidad === 'REMUNERADO') $tamizCountBase->where('modalidad', 'REMUNERADOS');
                 if ($modalidad === 'EQUIVALENTE') $tamizCountBase->where('modalidad', 'EQUIVALENTES');
 
-                if ($dateRange !== null) {
-                    $tamizCountBase->where(function ($q) use ($dateRange) {
-                        $start = $dateRange['start']->format('Y-m-d H:i:s');
-                        $end = $dateRange['end']->format('Y-m-d H:i:s');
-                        $q->whereBetween('fecha_suicidio_agudo', [$start, $end])
-                            ->orWhereBetween('fecha_suicidio_no_agudo', [$start, $end])
-                            ->orWhereRaw("TRY_CONVERT(datetime2, fecha_depresion, 120) BETWEEN ? AND ?", [$start, $end])
-                            ->orWhereRaw("TRY_CONVERT(datetime2, fecha_ansiedad, 120) BETWEEN ? AND ?", [$start, $end])
-                            ->orWhereRaw("TRY_CONVERT(datetime2, fecha_alcohol, 120) BETWEEN ? AND ?", [$start, $end])
-                            ->orWhereRaw("TRY_CONVERT(datetime2, fecha_burnout, 120) BETWEEN ? AND ?", [$start, $end]);
-                    });
-                }
+                // Aplicar filtro de fecha usando helper
+                $applyDateRangeMultipleColumns($tamizCountBase);
 
                 $tamizadosRemunerados = (clone $tamizCountBase)->where('modalidad', 'REMUNERADOS')->count();
                 $tamizadosEquivalentes = (clone $tamizCountBase)->where('modalidad', 'EQUIVALENTES')->count();
