@@ -183,7 +183,14 @@ class DashboardController extends Controller
 
     private function fetchDashboardData(Request $request, $departamento, $institucion, $modalidad, $idProceso, $corteLegacy)
     {
+        $stepStartTime = microtime(true);
+        $overallStart = microtime(true);
+
         try {
+            \Illuminate\Support\Facades\Log::info('Dashboard: [PASO 1] Iniciando fetchDashboardData', [
+                'filters' => compact('departamento', 'institucion', 'modalidad', 'idProceso', 'corteLegacy')
+            ]);
+
             // ====================================================================================
             // 1. FILTRADO DE POBLACIÓN (Usuarios/Serumistas)
             // ====================================================================================
@@ -193,6 +200,7 @@ class DashboardController extends Controller
             $totalSerumistas = 0;    // Padrón (serumista_equivalentes_remunerados)
 
             // Resolver rango de fechas por id_proceso (o corte legacy)
+            $stepStart = microtime(true);
             $dateRange = null; // ['start' => Carbon, 'end' => Carbon]
             $proceso = null;
             if ($idProceso) {
@@ -206,8 +214,11 @@ class DashboardController extends Controller
                     'end' => Carbon::parse($proceso->fecha_fin)->endOfDay(),
                 ];
             }
+            $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
+            \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 1.1] Proceso/rango de fechas resuelto en {$stepElapsed}ms");
 
             // Padrón (incluye REMUNERADOS y EQUIVALENTES)
+            $stepStart = microtime(true);
             $padronBase = DB::table('serumista_equivalentes_remunerados');
             if ($departamento) $padronBase->where('DEPARTAMENTO', $departamento);
             if ($institucion) $padronBase->where('INSTITUCION', 'LIKE', '%' . $institucion . '%');
@@ -217,9 +228,13 @@ class DashboardController extends Controller
                 if ($modalidad === 'EQUIVALENTE') $padronBase->where('MODALIDAD', 'EQUIVALENTES');
             }
 
+            \Illuminate\Support\Facades\Log::info('Dashboard: [PASO 1.2] Ejecutando COUNT de padrón...');
             $totalSerumistas = (clone $padronBase)->count();
+            $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
+            \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 1.2] COUNT padrón completado en {$stepElapsed}ms", ['total' => $totalSerumistas]);
 
             // IDs de usuarios registrados que pertenecen al padrón (base para métricas de médicos)
+            $stepStart = microtime(true);
             $userQuery = DB::table('usuarios')
                 ->join('serumista_equivalentes_remunerados', DB::raw('CAST(usuarios.cmp AS VARCHAR)'), '=', DB::raw('CAST(serumista_equivalentes_remunerados.CMP AS VARCHAR)'))
                 ->where('usuarios.estado', 1)
@@ -232,6 +247,8 @@ class DashboardController extends Controller
 
             // IMPORTANT: usar subquery para evitar límite de 2100 parámetros en SQL Server
             $filteredUserIds = $userQuery;
+            $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
+            \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 1.3] Query de usuarios filtrados construida en {$stepElapsed}ms");
 
             // Helper para aplicar filtros a las queries de métricas
             $applyFilter = function($q, $userColumn = 'user_id') use ($filteredUserIds) {
@@ -271,6 +288,9 @@ class DashboardController extends Controller
 
             // Determinar si podemos usar la vista/tabla materializada del dashboard.
             // En local puede fallar por dependencias a servidores/BD externos (ej. CMP02).
+            $stepStart = microtime(true);
+            \Illuminate\Support\Facades\Log::info('Dashboard: [PASO 2] Verificando si se puede usar vista materializada...');
+
             // Usar caché para evitar verificar en cada request
             $canUseTamizMaterialized = Cache::remember('dashboard:can_use_tamiz_materialized', now()->addHours(1), function () {
                 try {
@@ -283,13 +303,19 @@ class DashboardController extends Controller
                     return false;
                 }
             });
+            $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
+            \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 2] Verificación de vista materializada completada en {$stepElapsed}ms", ['can_use' => $canUseTamizMaterialized]);
 
             // ====================================================================================
             // 2. OBTENCIÓN DE MÉTRICAS (Con Filtros Aplicados)
             // ====================================================================================
+            \Illuminate\Support\Facades\Log::info('Dashboard: [PASO 3] Iniciando obtención de métricas de evaluaciones...');
+            $metricsStart = microtime(true);
 
             $tamizBase = null;
             if ($canUseTamizMaterialized) {
+                \Illuminate\Support\Facades\Log::info('Dashboard: [PASO 3.1] Usando vista materializada para evaluaciones...');
+
                 // Evaluaciones por tipo (médicos) usando tabla/vista materializada del dashboard (1 fila por usuario)
                 $tamizBase = DB::table('dashboard_total_medicos_tamizaje');
                 if ($departamento) $tamizBase->where('departamento', $departamento);
@@ -313,6 +339,7 @@ class DashboardController extends Controller
                 }
 
                 // Conteo por tipo (usuarios con registro en ese tamizaje)
+                $stepStart = microtime(true);
                 $totalAsq = (clone $tamizBase)
                     ->where(function ($q) {
                         $q->where('riesgo_suicida_no_agudo', '!=', 'Sin Registro')
@@ -320,43 +347,85 @@ class DashboardController extends Controller
                           ->orWhereNotNull('fecha_suicidio_no_agudo');
                     })
                     ->count();
+                $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
+                \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 3.1.1] ASQ contado en {$stepElapsed}ms", ['total' => $totalAsq]);
 
+                $stepStart = microtime(true);
                 $totalPhq = (clone $tamizBase)->where('depresion', '!=', 'Sin registro')->count();
+                $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
+                \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 3.1.2] PHQ contado en {$stepElapsed}ms", ['total' => $totalPhq]);
+
+                $stepStart = microtime(true);
                 $totalGad = (clone $tamizBase)->where('ansiedad', '!=', 'Sin registro')->count();
+                $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
+                \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 3.1.3] GAD contado en {$stepElapsed}ms", ['total' => $totalGad]);
+
+                $stepStart = microtime(true);
                 $totalAudit = (clone $tamizBase)->where('alcohol', '!=', 'Sin registro')->count();
+                $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
+                \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 3.1.4] AUDIT contado en {$stepElapsed}ms", ['total' => $totalAudit]);
+
+                $stepStart = microtime(true);
                 $totalMbi = (clone $tamizBase)->where('burnout', '!=', 'Sin registro')->count();
+                $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
+                \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 3.1.5] MBI contado en {$stepElapsed}ms", ['total' => $totalMbi]);
             } else {
+                \Illuminate\Support\Facades\Log::info('Dashboard: [PASO 3.2] Usando tablas base (fallback) para evaluaciones...');
+
                 // Fallback: contar por USUARIO (distinct) desde tablas base (sin dependencias externas)
+                $stepStart = microtime(true);
                 $totalAsq = DB::table('asq5_responses')
                     ->tap(fn ($q) => $applyFilter($q))
                     ->tap(fn ($q) => $applyDateRangeNvarchar($q, 'fecha_registro'))
                     ->distinct('user_id')
                     ->count('user_id');
+                $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
+                \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 3.2.1] ASQ (fallback) contado en {$stepElapsed}ms", ['total' => $totalAsq]);
+
+                $stepStart = microtime(true);
                 $totalPhq = DB::table('phq9_responses')
                     ->tap(fn ($q) => $applyFilter($q))
                     ->tap(fn ($q) => $applyDateRange($q, 'fecha'))
                     ->distinct('user_id')
                     ->count('user_id');
+                $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
+                \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 3.2.2] PHQ (fallback) contado en {$stepElapsed}ms", ['total' => $totalPhq]);
+
+                $stepStart = microtime(true);
                 $totalGad = DB::table('gad_responses')
                     ->tap(fn ($q) => $applyFilter($q))
                     ->tap(fn ($q) => $applyDateRange($q, 'fecha'))
                     ->distinct('user_id')
                     ->count('user_id');
+                $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
+                \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 3.2.3] GAD (fallback) contado en {$stepElapsed}ms", ['total' => $totalGad]);
+
+                $stepStart = microtime(true);
                 $totalMbi = DB::table('mbi_responses')
                     ->tap(fn ($q) => $applyFilter($q))
                     ->tap(fn ($q) => $applyDateRange($q, 'fecha'))
                     ->distinct('user_id')
                     ->count('user_id');
+                $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
+                \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 3.2.4] MBI (fallback) contado en {$stepElapsed}ms", ['total' => $totalMbi]);
+
+                $stepStart = microtime(true);
                 $totalAudit = DB::table('audit_responses')
                     ->tap(fn ($q) => $applyFilter($q))
                     ->tap(fn ($q) => $applyDateRange($q, 'fecha'))
                     ->distinct('user_id')
                     ->count('user_id');
+                $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
+                \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 3.2.5] AUDIT (fallback) contado en {$stepElapsed}ms", ['total' => $totalAudit]);
             }
 
             $totalEvaluaciones = $totalAsq + $totalPhq + $totalGad + $totalMbi + $totalAudit;
+            $metricsElapsed = round((microtime(true) - $metricsStart) * 1000, 2);
+            \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 3] Métricas de evaluaciones completadas en {$metricsElapsed}ms", ['total' => $totalEvaluaciones]);
 
             // Citas
+            \Illuminate\Support\Facades\Log::info('Dashboard: [PASO 4] Iniciando consultas de citas...');
+            $stepStart = microtime(true);
             $totalCitas = DB::table('citas')
                 ->tap(fn ($q) => $applyFilter($q, 'paciente_id'))
                 ->tap(fn ($q) => $applyDateRange($q, 'fecha'))
@@ -366,11 +435,16 @@ class DashboardController extends Controller
                 ->tap(fn ($q) => $applyFilter($q, 'paciente_id'))
                 ->tap(fn ($q) => $applyDateRange($q, 'fecha'))
                 ->count();
+            $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
+            \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 4] Citas consultadas en {$stepElapsed}ms", ['total' => $totalCitas, 'atendidas' => $citasAtendidas]);
 
             // Protocolos (caché de 30 minutos ya que no cambia frecuentemente)
+            $stepStart = microtime(true);
             $protocolosActivos = Cache::remember('dashboard:protocolos_activos', now()->addMinutes(30), function () {
                 return DB::table('curso_abordaje')->count();
             });
+            $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
+            \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 5] Protocolos obtenidos en {$stepElapsed}ms", ['total' => $protocolosActivos]);
 
             // ====================================================================================
             // 3. ESTADÍSTICAS DETALLADAS POR MODALIDAD - USANDO VISTAS DE LA BASE DE DATOS
@@ -471,8 +545,11 @@ class DashboardController extends Controller
             // ====================================================================================
             // 4. DERIVACIONES
             // ====================================================================================
+            \Illuminate\Support\Facades\Log::info('Dashboard: [PASO 6] Iniciando consultas de derivaciones...');
+            $derivStart = microtime(true);
 
             // Total de casos derivados
+            $stepStart = microtime(true);
             $totalCasosDerivados = DB::table('derivados')
                 ->when($filteredUserIds, function($q) use ($filteredUserIds) {
                     $q->whereIn('paciente_id', $filteredUserIds);
@@ -480,8 +557,11 @@ class DashboardController extends Controller
                 ->tap(fn ($q) => $applyDateRangeNvarchar($q, 'fecha'))
                 ->distinct('paciente_id')
                 ->count('paciente_id');
+            $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
+            \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 6.1] Total casos derivados obtenido en {$stepElapsed}ms", ['total' => $totalCasosDerivados]);
 
             // Derivados desde Tamizaje
+            $stepStart = microtime(true);
             $derivadosTamizaje = DB::table('derivados')
                 ->where('tipo', 'A') // A = automático (tamizaje/criterio riesgo)
                 ->when($filteredUserIds, function($q) use ($filteredUserIds) {
@@ -490,8 +570,11 @@ class DashboardController extends Controller
                 ->tap(fn ($q) => $applyDateRangeNvarchar($q, 'fecha'))
                 ->distinct('paciente_id')
                 ->count('paciente_id');
+            $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
+            \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 6.2] Derivados tamizaje obtenido en {$stepElapsed}ms", ['total' => $derivadosTamizaje]);
 
             // Derivados desde Intervención Breve
+            $stepStart = microtime(true);
             $derivadosIntervencionBreve = DB::table('derivados')
                 ->where('tipo', 'M') // M = manual (desde atención)
                 ->when($filteredUserIds, function($q) use ($filteredUserIds) {
@@ -500,9 +583,12 @@ class DashboardController extends Controller
                 ->tap(fn ($q) => $applyDateRangeNvarchar($q, 'fecha'))
                 ->distinct('paciente_id')
                 ->count('paciente_id');
+            $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
+            \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 6.3] Derivados intervención breve obtenido en {$stepElapsed}ms", ['total' => $derivadosIntervencionBreve]);
 
             // Derivaciones por Institución (ESSALUD y MINSA)
             // Usar serumista_equivalentes_remunerados para ser consistente con las vistas
+            $stepStart = microtime(true);
             $derivacionesEssaludQuery = DB::table('derivados')
                 ->join('usuarios', 'derivados.paciente_id', '=', 'usuarios.id')
                 ->join('serumista_equivalentes_remunerados', DB::raw('CAST(usuarios.cmp AS VARCHAR)'), '=', DB::raw('CAST(serumista_equivalentes_remunerados.CMP AS VARCHAR)'))
@@ -517,7 +603,10 @@ class DashboardController extends Controller
             $derivacionesEssalud = DB::table(DB::raw("({$derivacionesEssaludQuery->toSql()}) as sub"))
                 ->mergeBindings($derivacionesEssaludQuery)
                 ->count();
+            $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
+            \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 6.4] Derivaciones ESSALUD obtenidas en {$stepElapsed}ms", ['total' => $derivacionesEssalud]);
 
+            $stepStart = microtime(true);
             $derivacionesMinsaQuery = DB::table('derivados')
                 ->join('usuarios', 'derivados.paciente_id', '=', 'usuarios.id')
                 ->join('serumista_equivalentes_remunerados', DB::raw('CAST(usuarios.cmp AS VARCHAR)'), '=', DB::raw('CAST(serumista_equivalentes_remunerados.CMP AS VARCHAR)'))
@@ -532,8 +621,11 @@ class DashboardController extends Controller
             $derivacionesMinsa = DB::table(DB::raw("({$derivacionesMinsaQuery->toSql()}) as sub"))
                 ->mergeBindings($derivacionesMinsaQuery)
                 ->count();
+            $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
+            \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 6.5] Derivaciones MINSA obtenidas en {$stepElapsed}ms", ['total' => $derivacionesMinsa]);
 
             // Derivaciones atendidas (tabla derivaciones_atencion)
+            $stepStart = microtime(true);
             $derivacionesAtendidasEssalud = DB::table('derivaciones_atencion')
                 ->where('entidad', 'LIKE', '%ESSALUD%')
                 ->when($filteredUserIds, fn ($q) => $q->whereIn('paciente_id', $filteredUserIds))
@@ -547,8 +639,17 @@ class DashboardController extends Controller
                 ->count();
 
             $totalDerivacionesAtendidas = $derivacionesAtendidasEssalud + $derivacionesAtendidasMinsa;
+            $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
+            \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 6.6] Derivaciones atendidas obtenidas en {$stepElapsed}ms", [
+                'essalud' => $derivacionesAtendidasEssalud,
+                'minsa' => $derivacionesAtendidasMinsa,
+                'total' => $totalDerivacionesAtendidas
+            ]);
 
             // Derivaciones desde Tamizaje por tipo de evaluación
+            \Illuminate\Support\Facades\Log::info('Dashboard: [PASO 6.7] Iniciando derivaciones por tipo de evaluación...');
+
+            $stepStart = microtime(true);
             $derivacionesAsqQuery = DB::table('derivados')
                 ->join('asq5_responses', 'derivados.paciente_id', '=', 'asq5_responses.user_id')
                 ->where('derivados.tipo', 'A')
@@ -562,7 +663,10 @@ class DashboardController extends Controller
             $derivacionesAsq = DB::table(DB::raw("({$derivacionesAsqQuery->toSql()}) as sub"))
                 ->mergeBindings($derivacionesAsqQuery)
                 ->count();
+            $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
+            \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 6.7.1] Derivaciones ASQ obtenidas en {$stepElapsed}ms", ['total' => $derivacionesAsq]);
 
+            $stepStart = microtime(true);
             $derivacionesPhqQuery = DB::table('derivados')
                 ->join('phq9_responses', 'derivados.paciente_id', '=', 'phq9_responses.user_id')
                 ->where('derivados.tipo', 'A')
@@ -576,7 +680,10 @@ class DashboardController extends Controller
             $derivacionesPhq = DB::table(DB::raw("({$derivacionesPhqQuery->toSql()}) as sub"))
                 ->mergeBindings($derivacionesPhqQuery)
                 ->count();
+            $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
+            \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 6.7.2] Derivaciones PHQ obtenidas en {$stepElapsed}ms", ['total' => $derivacionesPhq]);
 
+            $stepStart = microtime(true);
             $derivacionesGadQuery = DB::table('derivados')
                 ->join('gad_responses', 'derivados.paciente_id', '=', 'gad_responses.user_id')
                 ->where('derivados.tipo', 'A')
@@ -590,7 +697,10 @@ class DashboardController extends Controller
             $derivacionesGad = DB::table(DB::raw("({$derivacionesGadQuery->toSql()}) as sub"))
                 ->mergeBindings($derivacionesGadQuery)
                 ->count();
+            $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
+            \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 6.7.3] Derivaciones GAD obtenidas en {$stepElapsed}ms", ['total' => $derivacionesGad]);
 
+            $stepStart = microtime(true);
             $derivacionesMbiQuery = DB::table('derivados')
                 ->join('mbi_responses', 'derivados.paciente_id', '=', 'mbi_responses.user_id')
                 ->where('derivados.tipo', 'A')
@@ -604,7 +714,10 @@ class DashboardController extends Controller
             $derivacionesMbi = DB::table(DB::raw("({$derivacionesMbiQuery->toSql()}) as sub"))
                 ->mergeBindings($derivacionesMbiQuery)
                 ->count();
+            $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
+            \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 6.7.4] Derivaciones MBI obtenidas en {$stepElapsed}ms", ['total' => $derivacionesMbi]);
 
+            $stepStart = microtime(true);
             $derivacionesAuditQuery = DB::table('derivados')
                 ->join('audit_responses', 'derivados.paciente_id', '=', 'audit_responses.user_id')
                 ->where('derivados.tipo', 'A')
@@ -618,6 +731,11 @@ class DashboardController extends Controller
             $derivacionesAudit = DB::table(DB::raw("({$derivacionesAuditQuery->toSql()}) as sub"))
                 ->mergeBindings($derivacionesAuditQuery)
                 ->count();
+            $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
+            \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 6.7.5] Derivaciones AUDIT obtenidas en {$stepElapsed}ms", ['total' => $derivacionesAudit]);
+
+            $derivElapsed = round((microtime(true) - $derivStart) * 1000, 2);
+            \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 6] Todas las derivaciones completadas en {$derivElapsed}ms total");
 
             // Estadísticas Generales (Top Cards)
             $estadisticas_generales = [
@@ -1058,6 +1176,9 @@ class DashboardController extends Controller
                 [ 'tipo' => 'info', 'mensaje' => ($estado_citas[4]['cantidad'] ?? 0) . ' citas sin presentarse - revisar casos' ],
                 [ 'tipo' => 'danger', 'mensaje' => ($distribucion_mbi[0]['cantidad'] ?? 0) . ' serumistas con Presencia de Burnout necesitan intervención inmediata' ],
             ];
+
+            $totalElapsed = round((microtime(true) - $overallStart) * 1000, 2);
+            \Illuminate\Support\Facades\Log::info("Dashboard: [FINAL] fetchDashboardData completado en {$totalElapsed}ms total");
 
             return [
                 'estadisticas_generales' => $estadisticas_generales,
