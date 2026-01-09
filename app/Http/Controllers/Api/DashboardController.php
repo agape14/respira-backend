@@ -103,23 +103,90 @@ class DashboardController extends Controller
      */
     public function index(Request $request)
     {
+        $startTime = microtime(true);
+
         // Verificación temprana de autenticación - responder rápido si no está autenticado
         if (!$request->user()) {
+            \Illuminate\Support\Facades\Log::warning('Dashboard: Usuario no autenticado');
             return response()->json([
                 'error' => 'No autenticado',
                 'message' => 'El token de autenticación es inválido o ha expirado'
             ], 401);
         }
 
+        // Generar clave de caché basada en los filtros
+        $departamento = $request->input('departamento', '');
+        $institucion = $request->input('institucion', '');
+        $modalidad = $request->input('modalidad', '');
+        $idProceso = $request->input('id_proceso', '');
+        $corteLegacy = $request->input('corte', '');
+
+        $cacheKey = sprintf(
+            'dashboard:data:%s:%s:%s:%s:%s',
+            md5($departamento),
+            md5($institucion),
+            md5($modalidad),
+            md5($idProceso),
+            md5($corteLegacy)
+        );
+
+        try {
+            // Verificar si existe en caché primero
+            $cached = Cache::get($cacheKey);
+            if ($cached !== null) {
+                $elapsed = round((microtime(true) - $startTime) * 1000, 2);
+                \Illuminate\Support\Facades\Log::info("Dashboard: Datos obtenidos del caché en {$elapsed}ms", [
+                    'cache_key' => $cacheKey,
+                    'filters' => compact('departamento', 'institucion', 'modalidad', 'idProceso')
+                ]);
+                return response()->json($cached);
+            }
+
+            // Si no está en caché, calcular los datos
+            \Illuminate\Support\Facades\Log::info('Dashboard: Calculando datos (no en caché)', [
+                'cache_key' => $cacheKey,
+                'filters' => compact('departamento', 'institucion', 'modalidad', 'idProceso')
+            ]);
+
+            // Intentar obtener datos del caché (5 minutos de validez)
+            $data = Cache::remember($cacheKey, now()->addMinutes(5), function () use ($request, $departamento, $institucion, $modalidad, $idProceso, $corteLegacy, $startTime) {
+                $calculateStart = microtime(true);
+                $result = $this->fetchDashboardData($request, $departamento, $institucion, $modalidad, $idProceso, $corteLegacy);
+                $calculateElapsed = round((microtime(true) - $calculateStart) * 1000, 2);
+                \Illuminate\Support\Facades\Log::info("Dashboard: Cálculo completado en {$calculateElapsed}ms");
+                return $result;
+            });
+
+            $elapsed = round((microtime(true) - $startTime) * 1000, 2);
+            \Illuminate\Support\Facades\Log::info("Dashboard: Respuesta enviada en {$elapsed}ms total");
+
+            // Si el caché retornó datos, devolverlos como respuesta JSON
+            return response()->json($data);
+        } catch (\Exception $e) {
+            $elapsed = round((microtime(true) - $startTime) * 1000, 2);
+            \Illuminate\Support\Facades\Log::error('Dashboard Error (outer)', [
+                'message' => $e->getMessage(),
+                'line' => $e->getLine(),
+                'file' => $e->getFile(),
+                'trace' => $e->getTraceAsString(),
+                'elapsed_ms' => $elapsed,
+                'cache_key' => $cacheKey
+            ]);
+            return response()->json([
+                'error' => 'Error al obtener datos del dashboard',
+                'message' => config('app.debug') ? $e->getMessage() : 'Error interno del servidor',
+                'line' => config('app.debug') ? $e->getLine() : null,
+                'file' => config('app.debug') ? basename($e->getFile()) : null,
+            ], 500);
+        }
+    }
+
+    private function fetchDashboardData(Request $request, $departamento, $institucion, $modalidad, $idProceso, $corteLegacy)
+    {
         try {
             // ====================================================================================
             // 1. FILTRADO DE POBLACIÓN (Usuarios/Serumistas)
             // ====================================================================================
-            $departamento = $request->input('departamento'); // DEPARTAMENTO (select "Consejo Regional")
-            $institucion = $request->input('institucion');
-            $modalidad = $request->input('modalidad');
-            $idProceso = $request->input('id_proceso'); // CORTE (envía id_proceso)
-            $corteLegacy = $request->input('corte'); // compatibilidad: antes enviaban 2025-I
 
             $hasPopulationFilters = ($departamento || $institucion || $modalidad);
             $filteredUserIds = null; // Subquery de IDs (usuarios.id) pertenecientes al padrón + filtros
@@ -204,13 +271,18 @@ class DashboardController extends Controller
 
             // Determinar si podemos usar la vista/tabla materializada del dashboard.
             // En local puede fallar por dependencias a servidores/BD externos (ej. CMP02).
-            $canUseTamizMaterialized = false;
-            try {
-                DB::table('dashboard_total_medicos_tamizaje')->select('user_id')->limit(1)->get();
-                $canUseTamizMaterialized = true;
-            } catch (\Throwable $e) {
-                $canUseTamizMaterialized = false;
-            }
+            // Usar caché para evitar verificar en cada request
+            $canUseTamizMaterialized = Cache::remember('dashboard:can_use_tamiz_materialized', now()->addHours(1), function () {
+                try {
+                    DB::table('dashboard_total_medicos_tamizaje')->select('user_id')->limit(1)->get();
+                    return true;
+                } catch (\Throwable $e) {
+                    \Illuminate\Support\Facades\Log::warning('Dashboard: No se puede usar vista materializada', [
+                        'error' => $e->getMessage()
+                    ]);
+                    return false;
+                }
+            });
 
             // ====================================================================================
             // 2. OBTENCIÓN DE MÉTRICAS (Con Filtros Aplicados)
@@ -295,8 +367,10 @@ class DashboardController extends Controller
                 ->tap(fn ($q) => $applyDateRange($q, 'fecha'))
                 ->count();
 
-            // Protocolos
-            $protocolosActivos = DB::table('curso_abordaje')->count();
+            // Protocolos (caché de 30 minutos ya que no cambia frecuentemente)
+            $protocolosActivos = Cache::remember('dashboard:protocolos_activos', now()->addMinutes(30), function () {
+                return DB::table('curso_abordaje')->count();
+            });
 
             // ====================================================================================
             // 3. ESTADÍSTICAS DETALLADAS POR MODALIDAD - USANDO VISTAS DE LA BASE DE DATOS
@@ -985,7 +1059,7 @@ class DashboardController extends Controller
                 [ 'tipo' => 'danger', 'mensaje' => ($distribucion_mbi[0]['cantidad'] ?? 0) . ' serumistas con Presencia de Burnout necesitan intervención inmediata' ],
             ];
 
-            return response()->json([
+            return [
                 'estadisticas_generales' => $estadisticas_generales,
                 'evaluaciones_por_tipo' => $evaluaciones_por_tipo,
                 'total_por_concepto' => $total_por_concepto,
@@ -1002,16 +1076,12 @@ class DashboardController extends Controller
                 'disponibilidad' => $disponibilidad,
                 'alertas' => $alertas,
                 'cantidad_por_instituciones' => $instituciones,
-            ]);
+            ];
 
         } catch (\Exception $e) {
             \Illuminate\Support\Facades\Log::error('Dashboard Error: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
-            return response()->json([
-                'error' => 'Error al obtener datos del dashboard',
-                'message' => $e->getMessage(),
-                'line' => $e->getLine(),
-                'file' => $e->getFile(),
-            ], 500);
+            // Re-lanzar la excepción para que se maneje fuera del caché
+            throw $e;
         }
     }
 
