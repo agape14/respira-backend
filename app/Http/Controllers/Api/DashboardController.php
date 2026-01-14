@@ -668,81 +668,60 @@ class DashboardController extends Controller
             \Illuminate\Support\Facades\Log::info('Dashboard: [PASO 6] Iniciando consultas de derivaciones...');
             $derivStart = microtime(true);
 
-            // Total de casos derivados
+            // Total de casos derivados - Usar lógica de pacientes de alto riesgo (misma que DerivacionController)
             $stepStart = microtime(true);
-            $totalCasosDerivados = DB::table('derivados')
-                ->when($filteredUserIds, function($q) use ($filteredUserIds) {
-                    $q->whereIn('paciente_id', $filteredUserIds);
-                })
-                ->tap(fn ($q) => $applyDateRangeNvarchar($q, 'fecha'))
-                ->distinct('paciente_id')
-                ->count('paciente_id');
-            $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
-            \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 6.1] Total casos derivados obtenido en {$stepElapsed}ms", ['total' => $totalCasosDerivados]);
+            $essaludHighRisk = $this->getHighRiskCountByEntity('ESSALUD', $filteredUserIds);
+            $minsaHighRisk = $this->getHighRiskCountByEntity('MINSA', $filteredUserIds);
+            $highRiskTotal = $essaludHighRisk + $minsaHighRisk;
 
-            // Derivados desde Tamizaje
+            // También contar derivados de la tabla (aunque esté vacía)
+            $derivadosFromTableQuery = DB::table('derivados');
+            if ($filteredUserIds !== null) {
+                $derivadosFromTableQuery->whereIn('paciente_id', $filteredUserIds);
+            }
+            $applyDateRangeNvarchar($derivadosFromTableQuery, 'fecha');
+            $derivadosFromTable = $derivadosFromTableQuery
+                ->selectRaw('COUNT(DISTINCT paciente_id) as total')
+                ->value('total') ?? 0;
+
+            // Total: combinamos ambos (los de alto riesgo ya incluyen los de la tabla derivados)
+            $totalCasosDerivados = max($derivadosFromTable, $highRiskTotal);
+            $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
+            \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 6.1] Total casos derivados obtenido en {$stepElapsed}ms", [
+                'total' => $totalCasosDerivados,
+                'high_risk_total' => $highRiskTotal,
+                'derivados_from_table' => $derivadosFromTable
+            ]);
+
+            // Derivados desde Tamizaje - Todos los pacientes de alto riesgo son por tamizaje
             $stepStart = microtime(true);
-            $derivadosTamizaje = DB::table('derivados')
-                ->where('tipo', 'A') // A = automático (tamizaje/criterio riesgo)
-                ->when($filteredUserIds, function($q) use ($filteredUserIds) {
-                    $q->whereIn('paciente_id', $filteredUserIds);
-                })
-                ->tap(fn ($q) => $applyDateRangeNvarchar($q, 'fecha'))
-                ->distinct('paciente_id')
-                ->count('paciente_id');
+            $derivadosTamizaje = $highRiskTotal; // Todos los pacientes de alto riesgo son por tamizaje
             $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
             \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 6.2] Derivados tamizaje obtenido en {$stepElapsed}ms", ['total' => $derivadosTamizaje]);
 
             // Derivados desde Intervención Breve
             $stepStart = microtime(true);
-            $derivadosIntervencionBreve = DB::table('derivados')
-                ->where('tipo', 'M') // M = manual (desde atención)
-                ->when($filteredUserIds, function($q) use ($filteredUserIds) {
-                    $q->whereIn('paciente_id', $filteredUserIds);
-                })
-                ->tap(fn ($q) => $applyDateRangeNvarchar($q, 'fecha'))
-                ->distinct('paciente_id')
-                ->count('paciente_id');
+            $derivadosIntervencionBreveQuery = DB::table('derivados')
+                ->where('tipo', 'M'); // M = manual (desde atención)
+            if ($filteredUserIds !== null) {
+                $derivadosIntervencionBreveQuery->whereIn('paciente_id', $filteredUserIds);
+            }
+            $applyDateRangeNvarchar($derivadosIntervencionBreveQuery, 'fecha');
+            $derivadosIntervencionBreve = $derivadosIntervencionBreveQuery
+                ->selectRaw('COUNT(DISTINCT paciente_id) as total')
+                ->value('total') ?? 0;
             $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
             \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 6.3] Derivados intervención breve obtenido en {$stepElapsed}ms", ['total' => $derivadosIntervencionBreve]);
 
-            // Derivaciones por Institución (ESSALUD y MINSA)
-            // Usar serumista_equivalentes_remunerados para ser consistente con las vistas
+            // Derivaciones por Institución (ESSALUD y MINSA) - Usar pacientes de alto riesgo
             $stepStart = microtime(true);
-            $derivacionesEssaludQuery = DB::table('derivados')
-                ->join('usuarios', 'derivados.paciente_id', '=', 'usuarios.id')
-                ->join('serumista_equivalentes_remunerados', DB::raw('CAST(usuarios.cmp AS VARCHAR)'), '=', DB::raw('CAST(serumista_equivalentes_remunerados.CMP AS VARCHAR)'))
-                ->where('serumista_equivalentes_remunerados.INSTITUCION', 'LIKE', '%ESSALUD%')
-                ->when($filteredUserIds, function($q) use ($filteredUserIds) {
-                    $q->whereIn('derivados.paciente_id', $filteredUserIds);
-                })
-                ->tap(fn ($q) => $applyDateRangeNvarchar($q, 'derivados.fecha'))
-                ->select('derivados.id')
-                ->distinct();
-
-            $derivacionesEssalud = DB::table(DB::raw("({$derivacionesEssaludQuery->toSql()}) as sub"))
-                ->mergeBindings($derivacionesEssaludQuery)
-                ->count();
+            $derivacionesEssalud = $essaludHighRisk;
+            $derivacionesMinsa = $minsaHighRisk;
             $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
-            \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 6.4] Derivaciones ESSALUD obtenidas en {$stepElapsed}ms", ['total' => $derivacionesEssalud]);
-
-            $stepStart = microtime(true);
-            $derivacionesMinsaQuery = DB::table('derivados')
-                ->join('usuarios', 'derivados.paciente_id', '=', 'usuarios.id')
-                ->join('serumista_equivalentes_remunerados', DB::raw('CAST(usuarios.cmp AS VARCHAR)'), '=', DB::raw('CAST(serumista_equivalentes_remunerados.CMP AS VARCHAR)'))
-                ->where('serumista_equivalentes_remunerados.INSTITUCION', 'LIKE', '%MINSA%')
-                ->when($filteredUserIds, function($q) use ($filteredUserIds) {
-                    $q->whereIn('derivados.paciente_id', $filteredUserIds);
-                })
-                ->tap(fn ($q) => $applyDateRangeNvarchar($q, 'derivados.fecha'))
-                ->select('derivados.id')
-                ->distinct();
-
-            $derivacionesMinsa = DB::table(DB::raw("({$derivacionesMinsaQuery->toSql()}) as sub"))
-                ->mergeBindings($derivacionesMinsaQuery)
-                ->count();
-            $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
-            \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 6.5] Derivaciones MINSA obtenidas en {$stepElapsed}ms", ['total' => $derivacionesMinsa]);
+            \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 6.4-6.5] Derivaciones por entidad obtenidas en {$stepElapsed}ms", [
+                'essalud' => $derivacionesEssalud,
+                'minsa' => $derivacionesMinsa
+            ]);
 
             // Derivaciones atendidas (tabla derivaciones_atencion)
             $stepStart = microtime(true);
@@ -766,91 +745,80 @@ class DashboardController extends Controller
                 'total' => $totalDerivacionesAtendidas
             ]);
 
-            // Derivaciones desde Tamizaje por tipo de evaluación
+            // Derivaciones desde Tamizaje por tipo de evaluación - Usar pacientes de alto riesgo directamente
             \Illuminate\Support\Facades\Log::info('Dashboard: [PASO 6.7] Iniciando derivaciones por tipo de evaluación...');
 
             $stepStart = microtime(true);
-            $derivacionesAsqQuery = DB::table('derivados')
-                ->join('asq5_responses', 'derivados.paciente_id', '=', 'asq5_responses.user_id')
-                ->where('derivados.tipo', 'A')
-                ->when($filteredUserIds, function($q) use ($filteredUserIds) {
-                    $q->whereIn('derivados.paciente_id', $filteredUserIds);
-                })
-                ->tap(fn ($q) => $applyDateRangeNvarchar($q, 'derivados.fecha'))
-                ->select('derivados.paciente_id')
-                ->distinct();
-
-            $derivacionesAsq = DB::table(DB::raw("({$derivacionesAsqQuery->toSql()}) as sub"))
-                ->mergeBindings($derivacionesAsqQuery)
-                ->count();
+            // ASQ: pacientes con resultado != 'Sin riesgo'
+            $derivacionesAsqQuery = DB::table('usuarios')
+                ->join('asq5_responses', 'usuarios.id', '=', 'asq5_responses.user_id')
+                ->where('asq5_responses.resultado', '!=', 'Sin riesgo')
+                ->whereRaw('asq5_responses.id = (SELECT MAX(id) FROM asq5_responses r2 WHERE r2.user_id = asq5_responses.user_id)')
+                ->where('usuarios.estado', 1);
+            if ($filteredUserIds !== null) {
+                $derivacionesAsqQuery->whereIn('usuarios.id', $filteredUserIds);
+            }
+            $derivacionesAsq = $derivacionesAsqQuery->selectRaw('COUNT(DISTINCT usuarios.id) as total')->value('total') ?? 0;
             $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
             \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 6.7.1] Derivaciones ASQ obtenidas en {$stepElapsed}ms", ['total' => $derivacionesAsq]);
 
             $stepStart = microtime(true);
-            $derivacionesPhqQuery = DB::table('derivados')
-                ->join('phq9_responses', 'derivados.paciente_id', '=', 'phq9_responses.user_id')
-                ->where('derivados.tipo', 'A')
-                ->when($filteredUserIds, function($q) use ($filteredUserIds) {
-                    $q->whereIn('derivados.paciente_id', $filteredUserIds);
-                })
-                ->tap(fn ($q) => $applyDateRangeNvarchar($q, 'derivados.fecha'))
-                ->select('derivados.paciente_id')
-                ->distinct();
-
-            $derivacionesPhq = DB::table(DB::raw("({$derivacionesPhqQuery->toSql()}) as sub"))
-                ->mergeBindings($derivacionesPhqQuery)
-                ->count();
+            // PHQ: pacientes con riesgo alto
+            $derivacionesPhqQuery = DB::table('usuarios')
+                ->join('phq9_responses', 'usuarios.id', '=', 'phq9_responses.user_id')
+                ->where('phq9_responses.riesgo', 'Riesgo alto')
+                ->whereRaw('phq9_responses.id_encuesta = (SELECT MAX(id_encuesta) FROM phq9_responses r2 WHERE r2.user_id = phq9_responses.user_id)')
+                ->where('usuarios.estado', 1);
+            if ($filteredUserIds !== null) {
+                $derivacionesPhqQuery->whereIn('usuarios.id', $filteredUserIds);
+            }
+            $derivacionesPhq = $derivacionesPhqQuery->selectRaw('COUNT(DISTINCT usuarios.id) as total')->value('total') ?? 0;
             $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
             \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 6.7.2] Derivaciones PHQ obtenidas en {$stepElapsed}ms", ['total' => $derivacionesPhq]);
 
             $stepStart = microtime(true);
-            $derivacionesGadQuery = DB::table('derivados')
-                ->join('gad_responses', 'derivados.paciente_id', '=', 'gad_responses.user_id')
-                ->where('derivados.tipo', 'A')
-                ->when($filteredUserIds, function($q) use ($filteredUserIds) {
-                    $q->whereIn('derivados.paciente_id', $filteredUserIds);
-                })
-                ->tap(fn ($q) => $applyDateRangeNvarchar($q, 'derivados.fecha'))
-                ->select('derivados.paciente_id')
-                ->distinct();
-
-            $derivacionesGad = DB::table(DB::raw("({$derivacionesGadQuery->toSql()}) as sub"))
-                ->mergeBindings($derivacionesGadQuery)
-                ->count();
+            // GAD: pacientes con riesgo alto
+            $derivacionesGadQuery = DB::table('usuarios')
+                ->join('gad_responses', 'usuarios.id', '=', 'gad_responses.user_id')
+                ->where('gad_responses.riesgo', 'Riesgo alto')
+                ->whereRaw('gad_responses.id_encuesta = (SELECT MAX(id_encuesta) FROM gad_responses r2 WHERE r2.user_id = gad_responses.user_id)')
+                ->where('usuarios.estado', 1);
+            if ($filteredUserIds !== null) {
+                $derivacionesGadQuery->whereIn('usuarios.id', $filteredUserIds);
+            }
+            $derivacionesGad = $derivacionesGadQuery->selectRaw('COUNT(DISTINCT usuarios.id) as total')->value('total') ?? 0;
             $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
             \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 6.7.3] Derivaciones GAD obtenidas en {$stepElapsed}ms", ['total' => $derivacionesGad]);
 
             $stepStart = microtime(true);
-            $derivacionesMbiQuery = DB::table('derivados')
-                ->join('mbi_responses', 'derivados.paciente_id', '=', 'mbi_responses.user_id')
-                ->where('derivados.tipo', 'A')
-                ->when($filteredUserIds, function($q) use ($filteredUserIds) {
-                    $q->whereIn('derivados.paciente_id', $filteredUserIds);
+            // MBI: pacientes con presencia de burnout
+            $derivacionesMbiQuery = DB::table('usuarios')
+                ->join('mbi_responses', 'usuarios.id', '=', 'mbi_responses.user_id')
+                ->where(function($q) {
+                    $q->where('mbi_responses.riesgoCE', 'Presencia de burnout')
+                      ->orWhere('mbi_responses.riesgoDP', 'Presencia de burnout')
+                      ->orWhere('mbi_responses.riesgoRP', 'Presencia de burnout');
                 })
-                ->tap(fn ($q) => $applyDateRangeNvarchar($q, 'derivados.fecha'))
-                ->select('derivados.paciente_id')
-                ->distinct();
-
-            $derivacionesMbi = DB::table(DB::raw("({$derivacionesMbiQuery->toSql()}) as sub"))
-                ->mergeBindings($derivacionesMbiQuery)
-                ->count();
+                ->whereRaw('mbi_responses.id_encuesta = (SELECT MAX(id_encuesta) FROM mbi_responses r2 WHERE r2.user_id = mbi_responses.user_id)')
+                ->where('usuarios.estado', 1);
+            if ($filteredUserIds !== null) {
+                $derivacionesMbiQuery->whereIn('usuarios.id', $filteredUserIds);
+            }
+            $derivacionesMbi = $derivacionesMbiQuery->selectRaw('COUNT(DISTINCT usuarios.id) as total')->value('total') ?? 0;
             $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
             \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 6.7.4] Derivaciones MBI obtenidas en {$stepElapsed}ms", ['total' => $derivacionesMbi]);
 
             $stepStart = microtime(true);
-            $derivacionesAuditQuery = DB::table('derivados')
-                ->join('audit_responses', 'derivados.paciente_id', '=', 'audit_responses.user_id')
-                ->where('derivados.tipo', 'A')
-                ->when($filteredUserIds, function($q) use ($filteredUserIds) {
-                    $q->whereIn('derivados.paciente_id', $filteredUserIds);
-                })
-                ->tap(fn ($q) => $applyDateRangeNvarchar($q, 'derivados.fecha'))
-                ->select('derivados.paciente_id')
-                ->distinct();
-
-            $derivacionesAudit = DB::table(DB::raw("({$derivacionesAuditQuery->toSql()}) as sub"))
-                ->mergeBindings($derivacionesAuditQuery)
-                ->count();
+            // AUDIT: pacientes con consumo problemático/dependencia/riesgo
+            $derivacionesAuditQuery = DB::table('usuarios')
+                ->join('audit_responses', 'usuarios.id', '=', 'audit_responses.user_id')
+                ->whereIn('audit_responses.riesgo', ['Consumo problemático', 'Dependencia', 'Riesgo'])
+                ->whereRaw('audit_responses.id_encuesta = (SELECT MAX(id_encuesta) FROM audit_responses r2 WHERE r2.user_id = audit_responses.user_id)')
+                ->where('usuarios.estado', 1);
+            if ($filteredUserIds !== null) {
+                $derivacionesAuditQuery->whereIn('usuarios.id', $filteredUserIds);
+            }
+            $derivacionesAudit = $derivacionesAuditQuery->selectRaw('COUNT(DISTINCT usuarios.id) as total')->value('total') ?? 0;
             $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
             \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 6.7.5] Derivaciones AUDIT obtenidas en {$stepElapsed}ms", ['total' => $derivacionesAudit]);
 
@@ -1443,6 +1411,91 @@ class DashboardController extends Controller
     private function calcularPorcentaje($valor, $total)
     {
         return $total > 0 ? round(($valor / $total) * 100) : 0;
+    }
+
+    /**
+     * Obtener conteo de pacientes de alto riesgo por entidad (misma lógica que DerivacionController)
+     */
+    private function getHighRiskCountByEntity($entidad, $filteredUserIds = null)
+    {
+        $tableName = $entidad === 'MINSA' ? 'serumista_equivalentes_remunerados' : 'serumista_remunerados';
+
+        // Construir query base (misma lógica que DerivacionController::getBaseQuery)
+        // Usar CAST para asegurar que el join funcione correctamente con SQL Server
+        $query = DB::table($tableName)
+            ->join('usuarios', DB::raw("CAST({$tableName}.CMP AS VARCHAR)"), '=', DB::raw('CAST(usuarios.cmp AS VARCHAR)'))
+            ->where('usuarios.estado', 1);
+
+        // Para MINSA, excluir los que ya están en ESSALUD
+        if ($entidad === 'MINSA') {
+            $query->whereNotExists(function ($sub) {
+                $sub->select(DB::raw(1))
+                    ->from('serumista_remunerados')
+                    ->whereColumn('serumista_remunerados.CMP', 'serumista_equivalentes_remunerados.CMP');
+            });
+        }
+
+        // Aplicar filtro de usuarios si existe
+        if ($filteredUserIds !== null) {
+            $query->whereIn('usuarios.id', $filteredUserIds);
+        }
+
+        // Aplicar filtro de alto riesgo (misma lógica que DerivacionController::applyHighRiskFilter)
+        $query->where(function($q) {
+            // PHQ9 - Riesgo Alto
+            $q->whereExists(function ($sub) {
+                $sub->select(DB::raw(1))
+                    ->from('phq9_responses')
+                    ->whereColumn('phq9_responses.user_id', 'usuarios.id')
+                    ->where('riesgo', 'Riesgo alto')
+                    ->whereRaw('id_encuesta = (SELECT MAX(id_encuesta) FROM phq9_responses r2 WHERE r2.user_id = phq9_responses.user_id)');
+            })
+            // GAD - Riesgo Alto
+            ->orWhereExists(function ($sub) {
+                $sub->select(DB::raw(1))
+                    ->from('gad_responses')
+                    ->whereColumn('gad_responses.user_id', 'usuarios.id')
+                    ->where('riesgo', 'Riesgo alto')
+                    ->whereRaw('id_encuesta = (SELECT MAX(id_encuesta) FROM gad_responses r2 WHERE r2.user_id = gad_responses.user_id)');
+            })
+            // MBI - Presencia de Burnout
+            ->orWhereExists(function ($sub) {
+                $sub->select(DB::raw(1))
+                    ->from('mbi_responses')
+                    ->whereColumn('mbi_responses.user_id', 'usuarios.id')
+                    ->where(function($w) {
+                        $w->where('riesgoCE', 'Presencia de burnout')
+                          ->orWhere('riesgoDP', 'Presencia de burnout')
+                          ->orWhere('riesgoRP', 'Presencia de burnout');
+                    })
+                    ->whereRaw('id_encuesta = (SELECT MAX(id_encuesta) FROM mbi_responses r2 WHERE r2.user_id = mbi_responses.user_id)');
+            })
+            // AUDIT - Consumo problemático/Dependencia/Riesgo
+            ->orWhereExists(function ($sub) {
+                $sub->select(DB::raw(1))
+                    ->from('audit_responses')
+                    ->whereColumn('audit_responses.user_id', 'usuarios.id')
+                    ->whereIn('riesgo', ['Consumo problemático', 'Dependencia', 'Riesgo'])
+                    ->whereRaw('id_encuesta = (SELECT MAX(id_encuesta) FROM audit_responses r2 WHERE r2.user_id = audit_responses.user_id)');
+            })
+            // ASQ - Cualquier riesgo
+            ->orWhereExists(function ($sub) {
+                $sub->select(DB::raw(1))
+                    ->from('asq5_responses')
+                    ->whereColumn('asq5_responses.user_id', 'usuarios.id')
+                    ->where('resultado', '!=', 'Sin riesgo')
+                    ->whereRaw('id = (SELECT MAX(id) FROM asq5_responses r2 WHERE r2.user_id = asq5_responses.user_id)');
+            })
+            // Derivados Manualmente (desde atención) - tabla derivados
+            ->orWhereExists(function ($sub) {
+                $sub->select(DB::raw(1))
+                    ->from('derivados')
+                    ->whereColumn('derivados.paciente_id', 'usuarios.id');
+            });
+        });
+
+        return $query->selectRaw('COUNT(DISTINCT usuarios.id) as total')
+            ->value('total') ?? 0;
     }
 }
 

@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\CitaController;
 use App\Http\Controllers\Api\DashboardController;
+use App\Http\Controllers\Api\DashboardDerivacionesController;
 use App\Http\Controllers\Api\ExternalDashboardController;
 use App\Http\Controllers\Api\ProcesoController;
 use App\Http\Controllers\Api\ResultadoTamizajeController;
@@ -385,6 +386,11 @@ Route::middleware(['auth:sanctum'])->group(function () {
     // Dashboard
     Route::get('/dashboard-data', [DashboardController::class, 'index']);
     Route::get('/dashboard-filtros', [DashboardController::class, 'filtros']);
+    
+    // Dashboard Derivaciones (endpoints separados para carga progresiva)
+    Route::get('/dashboard-derivaciones/total-casos', [DashboardDerivacionesController::class, 'totalCasosDerivados']);
+    Route::get('/dashboard-derivaciones/total-derivaciones', [DashboardDerivacionesController::class, 'totalDerivaciones']);
+    Route::get('/dashboard-derivaciones/derivaciones-tamizaje', [DashboardDerivacionesController::class, 'derivacionesTamizaje']);
 
     // Tamizaje
     Route::get('/tamizajes/exportar-todo', [ResultadoTamizajeController::class, 'exportarTodo']);
