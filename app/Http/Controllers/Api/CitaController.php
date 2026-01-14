@@ -657,18 +657,104 @@ class CitaController extends Controller
                 ], 422);
             }
 
-            // Crear la cita usando Eloquent
-            $cita = new Cita();
-            $cita->paciente_id = $request->paciente_id;
-            $cita->medico_id = $turno->medico_id;
-            $cita->turno_id = $request->turno_id;
-            $cita->fecha = $turno->fecha;
-            $cita->hora_inicio = $turno->hora_inicio;
-            $cita->hora_fin = $turno->hora_fin;
-            $cita->video_enlace = $request->video_enlace;
-            $cita->estado = 1; // 1 = Pendiente/Agendado
-            $cita->user_id = $request->user()->id;
-            $cita->save();
+            // Crear la cita - Formatear correctamente los datos para SQL Server
+            \Illuminate\Support\Facades\Log::info('CitaController::agendar - Iniciando creación de cita', [
+                'turno_id' => $request->turno_id,
+                'paciente_id' => $request->paciente_id,
+                'turno_fecha_raw' => $turno->fecha,
+                'turno_hora_inicio_raw' => $turno->hora_inicio,
+                'turno_hora_fin_raw' => $turno->hora_fin,
+                'turno_hora_inicio_type' => gettype($turno->hora_inicio),
+                'turno_hora_fin_type' => gettype($turno->hora_fin),
+            ]);
+
+            $fechaFormateada = Carbon::parse($turno->fecha)->format('Y-m-d');
+
+            // Formatear horas: extraer solo HH:MM:SS (sin microsegundos)
+            $horaInicioFormateada = is_string($turno->hora_inicio)
+                ? substr($turno->hora_inicio, 0, 8)
+                : Carbon::parse($turno->hora_inicio)->format('H:i:s');
+
+            $horaFinFormateada = is_string($turno->hora_fin)
+                ? substr($turno->hora_fin, 0, 8)
+                : Carbon::parse($turno->hora_fin)->format('H:i:s');
+
+            // Obtener timestamp actual formateado correctamente para SQL Server
+            $now = Carbon::now('America/Lima')->format('Y-m-d H:i:s');
+
+            \Illuminate\Support\Facades\Log::info('CitaController::agendar - Valores formateados', [
+                'fecha_formateada' => $fechaFormateada,
+                'hora_inicio_formateada' => $horaInicioFormateada,
+                'hora_fin_formateada' => $horaFinFormateada,
+                'now' => $now,
+                'medico_id' => $turno->medico_id,
+                'user_id' => $request->user()->id,
+            ]);
+
+            // Usar SQL directo con parámetros preparados y CONVERT para forzar tipos correctos
+            // SQL Server necesita que los valores estén explícitamente convertidos
+            try {
+                \Illuminate\Support\Facades\Log::info('CitaController::agendar - Creando cita con SQL directo y CONVERT');
+
+                // Usar SQL directo con CONVERT para asegurar que los valores se inserten correctamente
+                // CONVERT(tipo, valor, formato) - formato 23 para DATE, 108 para TIME, 120 para DATETIME
+                $sql = "
+                    INSERT INTO [citas]
+                    ([paciente_id], [medico_id], [turno_id], [fecha], [hora_inicio], [hora_fin], [video_enlace], [estado], [user_id], [created_at], [updated_at])
+                    OUTPUT INSERTED.id
+                    VALUES (?, ?, ?, CONVERT(DATE, ?, 23), CONVERT(TIME, ?, 108), CONVERT(TIME, ?, 108), ?, ?, ?, CONVERT(DATETIME, ?, 120), CONVERT(DATETIME, ?, 120))
+                ";
+
+                $result = DB::connection('sqlsrv')->select($sql, [
+                    (int)$request->paciente_id,
+                    (int)$turno->medico_id,
+                    (int)$request->turno_id,
+                    $fechaFormateada, // '2026-01-14'
+                    $horaInicioFormateada, // '08:00:00'
+                    $horaFinFormateada, // '09:00:00'
+                    $request->video_enlace,
+                    1, // estado
+                    (int)$request->user()->id,
+                    $now, // '2026-01-14 16:31:58'
+                    $now, // '2026-01-14 16:31:58'
+                ]);
+
+                $citaId = $result[0]->id ?? null;
+
+                if (!$citaId) {
+                    \Illuminate\Support\Facades\Log::error('CitaController::agendar - No se pudo obtener el ID de la cita');
+                    throw new \Exception('No se pudo obtener el ID de la cita insertada');
+                }
+
+                \Illuminate\Support\Facades\Log::info('CitaController::agendar - Cita creada exitosamente con SQL directo', [
+                    'cita_id' => $citaId,
+                ]);
+
+                // Cargar la cita usando Eloquent para tener acceso a las relaciones
+                $cita = Cita::find($citaId);
+
+            } catch (\Exception $e) {
+                \Illuminate\Support\Facades\Log::error('CitaController::agendar - Error en INSERT', [
+                    'error_message' => $e->getMessage(),
+                    'error_code' => $e->getCode(),
+                    'error_trace' => $e->getTraceAsString(),
+                    'valores_intentados' => [
+                        'paciente_id' => $request->paciente_id,
+                        'medico_id' => $turno->medico_id,
+                        'turno_id' => $request->turno_id,
+                        'fecha' => $fechaFormateada,
+                        'hora_inicio' => $horaInicioFormateada,
+                        'hora_fin' => $horaFinFormateada,
+                        'created_at' => $now,
+                        'updated_at' => $now,
+                    ],
+                ]);
+                throw $e;
+            }
+
+            // La cita ya está disponible en $cita desde el try block
+            // Recargar para asegurar que tenga todas las relaciones disponibles
+            $cita->refresh();
 
             // Generar reunión de Teams si no se proporcionó un enlace manual
             if (empty($cita->video_enlace)) {
@@ -700,8 +786,51 @@ class CitaController extends Controller
                 $teamsLink = $graphService->createMeeting($subject, $startDateTime, $endDateTime);
 
                     if ($teamsLink) {
+                        // Actualizar usando SQL directo con CONVERT para evitar problemas con updated_at
+                        $now = Carbon::now('America/Lima')->format('Y-m-d H:i:s');
+
+                        \Illuminate\Support\Facades\Log::info("CitaController::agendar - Actualizando video_enlace", [
+                            'cita_id' => $cita->id,
+                            'teams_link' => $teamsLink,
+                            'now' => $now,
+                        ]);
+
+                        try {
+                            $rowsAffected = DB::connection('sqlsrv')->update(
+                                "UPDATE [citas] SET [video_enlace] = ?, [updated_at] = CONVERT(DATETIME, ?, 120) WHERE [id] = ?",
+                                [$teamsLink, $now, $cita->id]
+                            );
+
+                            \Illuminate\Support\Facades\Log::info("CitaController::agendar - UPDATE ejecutado", [
+                                'cita_id' => $cita->id,
+                                'rows_affected' => $rowsAffected,
+                            ]);
+
+                            // Verificar que se actualizó correctamente
+                            $citaActualizada = DB::connection('sqlsrv')->table('citas')
+                                ->where('id', $cita->id)
+                                ->select('video_enlace', 'updated_at')
+                                ->first();
+
+                            \Illuminate\Support\Facades\Log::info("CitaController::agendar - Verificación después de UPDATE", [
+                                'cita_id' => $cita->id,
+                                'video_enlace_en_db' => $citaActualizada->video_enlace ?? 'NULL',
+                                'updated_at_en_db' => $citaActualizada->updated_at ?? 'NULL',
+                            ]);
+
+                        } catch (\Exception $updateException) {
+                            \Illuminate\Support\Facades\Log::error("CitaController::agendar - Error en UPDATE de video_enlace", [
+                                'cita_id' => $cita->id,
+                                'error' => $updateException->getMessage(),
+                                'trace' => $updateException->getTraceAsString(),
+                            ]);
+                            throw $updateException;
+                        }
+
+                        // Actualizar el objeto en memoria
                         $cita->video_enlace = $teamsLink;
-                        $cita->save();
+                        $cita->updated_at = Carbon::parse($now);
+
                         \Illuminate\Support\Facades\Log::info("Enlace Teams generado para cita ID {$cita->id}: {$teamsLink}");
 
                         // Enviar notificación por correo

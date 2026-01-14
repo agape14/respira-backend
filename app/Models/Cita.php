@@ -38,7 +38,7 @@ class Cita extends Model
     ];
 
     protected $casts = [
-        'fecha' => 'date:Y-m-d',
+        'fecha' => 'date',
         'hora_inicio' => 'string',
         'hora_fin' => 'string',
         'estado' => 'integer',
