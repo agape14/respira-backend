@@ -390,18 +390,27 @@ class ProtocoloAtencionController extends Controller
                 $idSesion = $citaOrigen->id_sesion;
             }
 
-            // Crear nueva cita usando Eloquent
-            $cita = new Cita();
-            $cita->paciente_id = $request->paciente_id;
-            $cita->medico_id = $turno->medico_id;
-            $cita->turno_id = $request->turno_id;
-            $cita->fecha = $turno->fecha;
-            $cita->hora_inicio = $turno->hora_inicio;
-            $cita->hora_fin = $turno->hora_fin;
-            $cita->estado = 1; // Agendado
-            $cita->user_id = $request->user()->id;
-            $cita->id_sesion = $idSesion;
-            $cita->save();
+            // Crear nueva cita usando Query Builder para SQL Server
+            // Convertir fecha a formato SQL Server
+            $fechaFormateada = Carbon::parse($turno->fecha)->format('Y-m-d');
+
+            $citaId = DB::connection('sqlsrv')
+                ->table('citas')
+                ->insertGetId([
+                    'paciente_id' => $request->paciente_id,
+                    'medico_id' => $turno->medico_id,
+                    'turno_id' => $request->turno_id,
+                    'fecha' => $fechaFormateada,
+                    'hora_inicio' => $turno->hora_inicio,
+                    'hora_fin' => $turno->hora_fin,
+                    'estado' => 1, // Agendado
+                    'user_id' => $request->user()->id,
+                    'id_sesion' => $idSesion,
+                    'created_at' => DB::raw("GETDATE()"),
+                    'updated_at' => DB::raw("GETDATE()")
+                ]);
+
+            $cita = Cita::find($citaId);
 
             // Generar reunión de Teams
             try {
@@ -522,18 +531,27 @@ class ProtocoloAtencionController extends Controller
                 ], 422);
             }
 
-            // Crear nueva cita usando Eloquent
-            $nuevaCita = new Cita();
-            $nuevaCita->paciente_id = $cita->paciente_id;
-            $nuevaCita->medico_id = $nuevoTurno->medico_id;
-            $nuevaCita->turno_id = $nuevoTurno->id;
-            $nuevaCita->fecha = $nuevoTurno->fecha;
-            $nuevaCita->hora_inicio = $nuevoTurno->hora_inicio;
-            $nuevaCita->hora_fin = $nuevoTurno->hora_fin;
-            $nuevaCita->estado = 1; // Agendado
-            $nuevaCita->user_id = $request->user()->id;
-            $nuevaCita->id_sesion = $cita->id_sesion;
-            $nuevaCita->save();
+            // Crear nueva cita usando Query Builder para SQL Server
+            // Convertir fecha a formato SQL Server
+            $fechaFormateada = Carbon::parse($nuevoTurno->fecha)->format('Y-m-d');
+
+            $nuevaCitaId = DB::connection('sqlsrv')
+                ->table('citas')
+                ->insertGetId([
+                    'paciente_id' => $cita->paciente_id,
+                    'medico_id' => $nuevoTurno->medico_id,
+                    'turno_id' => $nuevoTurno->id,
+                    'fecha' => $fechaFormateada,
+                    'hora_inicio' => $nuevoTurno->hora_inicio,
+                    'hora_fin' => $nuevoTurno->hora_fin,
+                    'estado' => 1, // Agendado
+                    'user_id' => $request->user()->id,
+                    'id_sesion' => $cita->id_sesion,
+                    'created_at' => DB::raw("GETDATE()"),
+                    'updated_at' => DB::raw("GETDATE()")
+                ]);
+
+            $nuevaCita = Cita::find($nuevaCitaId);
 
             // Generar reunión de Teams
             try {
