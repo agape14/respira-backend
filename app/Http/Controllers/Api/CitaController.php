@@ -358,9 +358,9 @@ class CitaController extends Controller
     {
         try {
             // Lógica portada de legacy (saludmental):
-            // PERFILMEDICOS = 4,5
+            // PERFILMEDICOS = 4,5,10 (4=Especialista Psicólogo antiguo, 5=Especialista General, 10=Psicólogo nuevo)
             // Devuelve todos los terapeutas activos (con o sin turnos)
-            $terapeutas = Usuario::whereIn('perfil_id', [4, 5])
+            $terapeutas = Usuario::whereIn('perfil_id', [4, 5, 10])
                 ->where('estado', 1) // Solo usuarios activos
                 ->select('id', 'nombre_completo')
                 ->distinct()
