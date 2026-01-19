@@ -622,14 +622,21 @@ class ProtocoloAtencionController extends Controller
             $sesion->fill($request->except(['cita_id', 'estado']));
             $sesion->save();
 
-            // Vincular cita con sesión si no lo estaba
+            // Vincular cita con sesión si no lo estaba y actualizar estado
+            // Usar Query Builder directamente para evitar problemas con SQL Server y timestamps
+            $updateData = [
+                'estado' => 2,
+                'updated_at' => DB::raw("GETDATE()")
+            ];
+
             if (!$cita->id_sesion) {
-                $cita->id_sesion = $sesion->id;
+                $updateData['id_sesion'] = $sesion->id;
             }
 
-            // Actualizar estado de la cita a Atendido (2)
-            $cita->estado = 2;
-            $cita->save();
+            DB::connection('sqlsrv')
+                ->table('citas')
+                ->where('id', $cita->id)
+                ->update($updateData);
 
             DB::connection('sqlsrv')->commit();
 
@@ -673,18 +680,27 @@ class ProtocoloAtencionController extends Controller
             }
 
             // 1. Marcar cita actual como Atendido (2)
-            $cita->estado = 2;
-            $cita->save();
+            // Usar Query Builder directamente para evitar problemas con SQL Server y timestamps
+            DB::connection('sqlsrv')
+                ->table('citas')
+                ->where('id', $cita->id)
+                ->update([
+                    'estado' => 2,
+                    'updated_at' => DB::raw("GETDATE()")
+                ]);
 
             // 2. Crear registro de finalización en citas_finalizados
             // Esto marca que la intervención se finalizó en esta cita
-            \App\Models\CitasFinalizado::create([
-                'cita_id' => $cita->id,
-                'paciente_id' => $cita->paciente_id,
-                'observa' => $request->observacion ?? 'Intervención finalizada',
-                'fecha' => now_lima(),
-                'user_id' => $request->user()->id
-            ]);
+            // Usar Query Builder para evitar problemas con SQL Server y timestamps
+            DB::connection('sqlsrv')
+                ->table('citas_finalizados')
+                ->insert([
+                    'cita_id' => $cita->id,
+                    'paciente_id' => $cita->paciente_id,
+                    'observa' => $request->observacion ?? 'Intervención finalizada',
+                    'fecha' => DB::raw("GETDATE()"),
+                    'user_id' => $request->user()->id
+                ]);
 
             DB::connection('sqlsrv')->commit();
 
@@ -713,8 +729,15 @@ class ProtocoloAtencionController extends Controller
             DB::connection('sqlsrv')->beginTransaction();
 
             $cita = Cita::findOrFail($request->cita_id);
-            $cita->estado = 4; // Cancelado
-            $cita->save();
+
+            // Usar Query Builder directamente para evitar problemas con SQL Server y timestamps
+            DB::connection('sqlsrv')
+                ->table('citas')
+                ->where('id', $cita->id)
+                ->update([
+                    'estado' => 4,
+                    'updated_at' => DB::raw("GETDATE()")
+                ]);
 
             DB::connection('sqlsrv')->commit();
 
@@ -743,8 +766,15 @@ class ProtocoloAtencionController extends Controller
             DB::connection('sqlsrv')->beginTransaction();
 
             $cita = Cita::findOrFail($request->cita_id);
-            $cita->estado = 3; // No se presentó
-            $cita->save();
+
+            // Usar Query Builder directamente para evitar problemas con SQL Server y timestamps
+            DB::connection('sqlsrv')
+                ->table('citas')
+                ->where('id', $cita->id)
+                ->update([
+                    'estado' => 3,
+                    'updated_at' => DB::raw("GETDATE()")
+                ]);
 
             DB::connection('sqlsrv')->commit();
 
@@ -901,28 +931,42 @@ class ProtocoloAtencionController extends Controller
             DB::connection('sqlsrv')->beginTransaction();
 
             if ($request->accion == 'U') {
-                $derivacion = \App\Models\Derivado::findOrFail($request->derivacion_id);
-                $derivacion->cenate_id = $request->especialista_id;
-                $derivacion->observa = $request->observacion;
-                $derivacion->save();
+                // Actualizar derivación existente usando Query Builder
+                DB::connection('sqlsrv')
+                    ->table('derivados')
+                    ->where('id', $request->derivacion_id)
+                    ->update([
+                        'cenate_id' => $request->especialista_id,
+                        'observa' => $request->observacion
+                    ]);
+
+                $derivacion = \App\Models\Derivado::find($request->derivacion_id);
                 $message = 'Derivación actualizada exitosamente';
             } else {
-                $derivacion = new \App\Models\Derivado();
-                $derivacion->cita_id = $request->cita_id;
-                $derivacion->paciente_id = $request->paciente_id;
-                $derivacion->cenate_id = $request->especialista_id;
-                $derivacion->observa = $request->observacion;
-                $derivacion->fecha = now_lima();
-                $derivacion->tipo = 'M'; // M = Manual (derivado desde atención)
-                $derivacion->save();
+                // Insertar nueva derivación usando Query Builder para evitar problemas con SQL Server
+                $derivacionId = DB::connection('sqlsrv')
+                    ->table('derivados')
+                    ->insertGetId([
+                        'cita_id' => $request->cita_id,
+                        'paciente_id' => $request->paciente_id,
+                        'cenate_id' => $request->especialista_id,
+                        'observa' => $request->observacion,
+                        'fecha' => DB::raw("GETDATE()"),
+                        'tipo' => 'M' // M = Manual (derivado desde atención)
+                    ]);
+
+                $derivacion = \App\Models\Derivado::find($derivacionId);
                 $message = 'Paciente derivado exitosamente';
 
                 // Actualizar estado de la cita a Derivado (5)
-                $cita = Cita::find($request->cita_id);
-                if ($cita) {
-                    $cita->estado = 5; // Derivado (Desaparece de Por Atender y Atendidos)
-                    $cita->save();
-                }
+                // Usar Query Builder directamente para evitar problemas con SQL Server y timestamps
+                DB::connection('sqlsrv')
+                    ->table('citas')
+                    ->where('id', $request->cita_id)
+                    ->update([
+                        'estado' => 5,
+                        'updated_at' => DB::raw("GETDATE()")
+                    ]);
 
                 // Enviar correo
                 $notificationService->enviarNotificacionDerivacion($derivacion);
