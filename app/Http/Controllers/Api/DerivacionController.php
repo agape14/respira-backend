@@ -25,27 +25,36 @@ class DerivacionController extends Controller
     {
         $tableName = $this->getTableName($entidad);
 
-        $query = DB::table($tableName)
-            ->select("{$tableName}.*")
-            ->join('usuarios', "{$tableName}.CMP", '=', 'usuarios.cmp')
+        // Cambiar estrategia: partir desde usuarios (con riesgo alto) hacia serumistas
+        // Así incluimos usuarios con riesgo alto que NO estén en las tablas de serumistas
+        $query = DB::table('usuarios')
+            ->select('usuarios.*')
+            ->leftJoin($tableName, 'usuarios.cmp', '=', "{$tableName}.CMP")
             ->where('usuarios.estado', 1);
 
-        // Optional: Filter by Institution if needed, but user implies table split is the key.
-        // If strict filtering is needed:
-        /*
         if ($entidad === 'ESSALUD') {
-            $query->where('INSTITUCION', 'LIKE', '%ESSALUD%');
+            // ESSALUD: Incluir los que están en serumista_remunerados
+            // Y también los que NO están en serumista_equivalentes (MINSA)
+            $query->where(function($q) use ($tableName) {
+                // Están en tabla ESSALUD
+                $q->whereNotNull("{$tableName}.CMP")
+                  // O NO están en tabla MINSA (entonces van a ESSALUD por defecto)
+                  ->orWhereNotExists(function ($sub) {
+                      $sub->select(DB::raw(1))
+                          ->from('serumista_equivalentes_remunerados')
+                          ->whereColumn('serumista_equivalentes_remunerados.CMP', 'usuarios.cmp');
+                  });
+            });
         } elseif ($entidad === 'MINSA') {
-            // MINSA logic
-        }
-        */
-
-        if ($entidad === 'MINSA') {
-            // Excluir los que ya están en ESSALUD (serumista_remunerados)
+            // MINSA: Solo los que están en serumista_equivalentes_remunerados
+            // y NO están en serumista_remunerados
+            $query->whereNotNull("{$tableName}.CMP");
+            
+            // Excluir los que están en ESSALUD (remunerados)
             $query->whereNotExists(function ($sub) {
                 $sub->select(DB::raw(1))
                     ->from('serumista_remunerados')
-                    ->whereColumn('serumista_remunerados.CMP', 'serumista_equivalentes_remunerados.CMP');
+                    ->whereColumn('serumista_remunerados.CMP', 'usuarios.cmp');
             });
         }
 
@@ -148,19 +157,22 @@ class DerivacionController extends Controller
 
         if ($search) {
             $query->where(function($q) use ($search, $tableName) {
+                // Buscar en tabla serumistas O en tabla usuarios (para los que no están en serumistas)
                 $q->where("{$tableName}.APELLIDOS Y NOMBRES", 'LIKE', "%{$search}%")
-                  ->orWhere("{$tableName}.CMP", 'LIKE', "%{$search}%");
+                  ->orWhere("{$tableName}.CMP", 'LIKE', "%{$search}%")
+                  ->orWhere('usuarios.nombre_completo', 'LIKE', "%{$search}%")
+                  ->orWhere('usuarios.cmp', 'LIKE', "%{$search}%");
             });
         }
 
-        // Add select for columns
+        // Add select for columns usando COALESCE para usuarios sin datos en serumistas
         $query->addSelect([
             'usuarios.id as usuario_id',
             'usuarios.telefono',
-            "{$tableName}.APELLIDOS Y NOMBRES as nombre_completo",
-            "{$tableName}.CMP as cmp",
-            "{$tableName}.INSTITUCION as entidad",
-            "{$tableName}.Email as email",
+            DB::raw("COALESCE({$tableName}.[APELLIDOS Y NOMBRES], usuarios.nombre_completo) as nombre_completo"),
+            DB::raw("COALESCE({$tableName}.CMP, usuarios.cmp) as cmp"),
+            DB::raw("COALESCE({$tableName}.INSTITUCION, 'Sin información') as entidad"),
+            DB::raw("COALESCE({$tableName}.Email, usuarios.nombre_usuario) as email"),
 
             // Subqueries for latest results
             'phq_riesgo' => DB::table('phq9_responses')
@@ -337,23 +349,25 @@ class DerivacionController extends Controller
             if ($search) {
                 $query->where(function($q) use ($search, $tableName) {
                     $q->where("{$tableName}.APELLIDOS Y NOMBRES", 'LIKE', "%{$search}%")
-                      ->orWhere("{$tableName}.CMP", 'LIKE', "%{$search}%");
+                      ->orWhere("{$tableName}.CMP", 'LIKE', "%{$search}%")
+                      ->orWhere('usuarios.nombre_completo', 'LIKE', "%{$search}%")
+                      ->orWhere('usuarios.cmp', 'LIKE', "%{$search}%");
                 });
             }
 
-            // Seleccionar columnas necesarias
+            // Seleccionar columnas necesarias usando COALESCE
             $query->addSelect([
                 'usuarios.id as usuario_id',
                 'usuarios.telefono',
                 'usuarios.sexo',
-                "{$tableName}.APELLIDOS Y NOMBRES as nombre_completo",
-                "{$tableName}.CMP as cmp",
-                "{$tableName}.NumeroDocumento as dni",
-                "{$tableName}.INSTITUCION as entidad",
-                "{$tableName}.Email as email",
-                "{$tableName}.DEPARTAMENTO as departamento",
-                "{$tableName}.PROVINCIA as provincia",
-                "{$tableName}.DISTRITO as distrito",
+                DB::raw("COALESCE({$tableName}.[APELLIDOS Y NOMBRES], usuarios.nombre_completo) as nombre_completo"),
+                DB::raw("COALESCE({$tableName}.CMP, usuarios.cmp) as cmp"),
+                DB::raw("COALESCE({$tableName}.NumeroDocumento, usuarios.nombre_usuario) as dni"),
+                DB::raw("COALESCE({$tableName}.INSTITUCION, 'Sin información') as entidad"),
+                DB::raw("COALESCE({$tableName}.Email, usuarios.nombre_usuario) as email"),
+                DB::raw("COALESCE({$tableName}.DEPARTAMENTO, '') as departamento"),
+                DB::raw("COALESCE({$tableName}.PROVINCIA, '') as provincia"),
+                DB::raw("COALESCE({$tableName}.DISTRITO, '') as distrito"),
 
                 // Subqueries for latest results
                 'phq_riesgo' => DB::table('phq9_responses')

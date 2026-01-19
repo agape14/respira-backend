@@ -67,13 +67,14 @@ class ResultadoTamizajeController extends Controller
             $fechaFin = $request->get('fecha_fin');
 
             // CTE para preparar los datos y calcular la fecha de última evaluación
+            // Cambio: partir desde usuarios (que tienen evaluaciones) y hacer LEFT JOIN a serumistas
             $cte = "
                 WITH TamizajeData AS (
                     SELECT
-                        COALESCE(u.id, 0) AS id,
-                        s.NumeroDocumento AS dni,
-                        s.[APELLIDOS Y NOMBRES] AS nombre_completo,
-                        s.CMP AS cmp,
+                        u.id AS id,
+                        COALESCE(s.NumeroDocumento, u.nombre_usuario) AS dni,
+                        COALESCE(s.[APELLIDOS Y NOMBRES], u.nombre_completo) AS nombre_completo,
+                        COALESCE(s.CMP, u.cmp) AS cmp,
 
                         asq.resultado AS asq, asq.fecha_registro AS asq_fecha, asq.id AS asq_id,
                         phq.riesgo AS phq, phq.puntaje AS phq_puntaje, phq.fecha AS phq_fecha, phq.id_encuesta AS phq_id,
@@ -83,14 +84,17 @@ class ResultadoTamizajeController extends Controller
 
                         (SELECT MAX(v) FROM (VALUES (asq.fecha_registro), (phq.fecha), (gad.fecha), (mbi.fecha), (audit.fecha)) AS value(v)) as fecha_ultima_evaluacion
 
-                    FROM serumista_remunerados s
-                    LEFT JOIN usuarios u ON s.CMP = u.cmp AND u.estado = 1
+                    FROM usuarios u
+                    LEFT JOIN serumista_remunerados s ON u.cmp = s.CMP
 
                     OUTER APPLY (SELECT TOP 1 id, resultado, fecha_registro FROM asq5_responses WHERE user_id = u.id ORDER BY id DESC) asq
                     OUTER APPLY (SELECT TOP 1 id_encuesta, riesgo, puntaje, fecha FROM phq9_responses WHERE user_id = u.id ORDER BY id_encuesta DESC) phq
                     OUTER APPLY (SELECT TOP 1 id_encuesta, riesgo, puntaje, fecha FROM gad_responses WHERE user_id = u.id ORDER BY id_encuesta DESC) gad
                     OUTER APPLY (SELECT TOP 1 id_encuesta, riesgoCE, riesgoDP, riesgoRP, fecha FROM mbi_responses WHERE user_id = u.id ORDER BY id_encuesta DESC) mbi
                     OUTER APPLY (SELECT TOP 1 id_encuesta, riesgo, puntaje, fecha FROM audit_responses WHERE user_id = u.id ORDER BY id_encuesta DESC) audit
+
+                    WHERE u.estado = 1
+                    AND (asq.id IS NOT NULL OR phq.id_encuesta IS NOT NULL OR gad.id_encuesta IS NOT NULL OR mbi.id_encuesta IS NOT NULL OR audit.id_encuesta IS NOT NULL)
                 )
             ";
 
@@ -274,7 +278,7 @@ class ResultadoTamizajeController extends Controller
                 "SELECT * FROM asq5_responses WHERE user_id = ? ORDER BY fecha_registro DESC",
                 [$userId]
             );
-            
+
             // Procesar ASQ para agregar puntuación e interpretación
             $asq = array_map(function($item) {
                 // Calcular puntuación: cada respuesta "Si" cuenta como 1 punto
@@ -285,12 +289,12 @@ class ResultadoTamizajeController extends Controller
                         $puntaje++;
                     }
                 }
-                
+
                 // Determinar interpretación basada en el resultado
                 $interpretacion = '';
                 $resultado = $item->resultado ?? '';
                 $resultadoLower = strtolower($resultado);
-                
+
                 if (strpos($resultadoLower, 'agudo') !== false || strpos($resultadoLower, 'inminente') !== false) {
                     $interpretacion = 'Se requiere atención inmediata y evaluación de emergencia. Contacto urgente con servicios de salud mental.';
                 } elseif (strpos($resultadoLower, 'no agudo') !== false) {
@@ -300,14 +304,14 @@ class ResultadoTamizajeController extends Controller
                 } else {
                     $interpretacion = 'Evaluación completada. Se recomienda seguimiento según protocolo.';
                 }
-                
+
                 // Agregar campos calculados al objeto
                 $item->puntaje = $puntaje;
                 $item->interpretacion = $interpretacion;
-                
+
                 return $item;
             }, $asqRaw);
-            
+
             $evaluaciones['asq'] = $asq;
 
             // PHQ9 - Todas las evaluaciones
@@ -392,32 +396,32 @@ class ResultadoTamizajeController extends Controller
                     s.PRESUPUESTO AS presupuesto,
                     s.[ZAF (*)] AS zaf,
                     s.[ZE (**)] AS ze,
-                    
+
                     -- ASQ
                     asq.resultado AS asq_resultado,
                     asq.fecha_registro AS asq_fecha,
                     asq.pregunta1, asq.pregunta2, asq.pregunta3, asq.pregunta4, asq.pregunta5,
-                    
+
                     -- PHQ
                     phq.riesgo AS phq_riesgo,
                     phq.puntaje AS phq_puntaje,
                     phq.fecha AS phq_fecha,
-                    
+
                     -- GAD
                     gad.riesgo AS gad_riesgo,
                     gad.puntaje AS gad_puntaje,
                     gad.fecha AS gad_fecha,
-                    
+
                     -- AUDIT
                     audit.riesgo AS audit_riesgo,
                     audit.puntaje AS audit_puntaje,
                     audit.fecha AS audit_fecha,
-                    
+
                     -- MBI
                     mbi.riesgoCE AS mbi_riesgo, -- Solo CE para la columna Burnout
                     mbi.riesgoDP,
                     mbi.riesgoRP,
-                    mbi.puntajeCE AS mbi_puntaje, 
+                    mbi.puntajeCE AS mbi_puntaje,
                     mbi.fecha AS mbi_fecha
 
                 FROM serumista_remunerados s
@@ -555,14 +559,14 @@ class ResultadoTamizajeController extends Controller
                 $fechaAgudo = '';
                 $riesgoNoAgudo = '';
                 $fechaNoAgudo = '';
-                
+
                 // Lógica exacta de Reportes.php
                 if ($r->asq_resultado) {
                     $res = trim($r->asq_resultado); // Case sensitive check first, or normalize? Reportes.php uses exact strings usually.
-                    
+
                     // Normalizar para comparación segura
                     $resLower = strtolower($res);
-                    
+
                     if ($resLower === 'riesgo suicida agudo/inminente') {
                         $riesgoAgudo = 'Sí';
                         $fechaAgudo = $r->asq_fecha;
@@ -734,10 +738,10 @@ class ResultadoTamizajeController extends Controller
             $sheet->setAutoFilter("A1:{$lastColumn}1");
 
             $filename = $dni ? "Resultados_Evaluacion_{$dni}.xlsx" : "Resultados_Evaluaciones_Todos.xlsx";
-            
+
             // Stream download
             $writer = new Xlsx($spreadsheet);
-            
+
             return response()->streamDownload(function() use ($writer) {
                 $writer->save('php://output');
             }, $filename);
@@ -753,7 +757,7 @@ class ResultadoTamizajeController extends Controller
             case 'asq':
                 if (empty($r->asq_resultado)) return '';
                 $res = trim(strtolower($r->asq_resultado));
-                
+
                 if ($res === 'riesgo suicida agudo/inminente') {
                     return 'Se requiere atención inmediata y evaluación de emergencia. Contacto urgente con servicios de salud mental.';
                 } elseif ($res === 'riesgo suicida no agudo') {
@@ -778,7 +782,7 @@ class ResultadoTamizajeController extends Controller
             case 'mbi':
                 if (empty($r->mbi_riesgo)) return '';
                 return "Agotamiento Emocional: {$r->mbi_riesgo}, Despersonalización: {$r->riesgoDP}, Realización Personal: {$r->riesgoRP}.";
-            
+
             default:
                 return '';
         }
