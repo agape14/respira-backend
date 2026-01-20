@@ -411,6 +411,7 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::delete('/turnos/{id}', [CitaController::class, 'destroy']);
     Route::get('/citas', [CitaController::class, 'citas']);
     Route::post('/citas/agendar', [CitaController::class, 'agendar']);
+    Route::put('/citas/{cita_id}/video-enlace', [CitaController::class, 'actualizarVideoEnlace']);
     Route::get('/citas/intervencion-sesion/{paciente_id}', [CitaController::class, 'obtenerIntervencionSesion']);
 
     // Protocolos de Atención

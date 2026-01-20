@@ -39,6 +39,7 @@ class CitaController extends Controller
                     't.hora_fin',
                     'u.nombre_completo as terapeuta',
                     'p.nombre_completo as paciente',
+                    'c.id as cita_id',
                     'c.video_enlace',
                     DB::raw('CASE WHEN c.id IS NOT NULL THEN 1 ELSE 0 END as agendado'),
                     DB::raw('DATEDIFF(MINUTE, t.hora_inicio, t.hora_fin) as duracion')
@@ -1254,6 +1255,109 @@ class CitaController extends Controller
                     'port' => env('MAIL_PORT'),
                     'encryption' => env('MAIL_ENCRYPTION'),
                 ]
+            ], 500);
+        }
+    }
+
+    /**
+     * Actualizar el enlace de reunión virtual de una cita
+     * PUT/PATCH /api/citas/{cita_id}/video-enlace
+     */
+    public function actualizarVideoEnlace(Request $request, $citaId)
+    {
+        try {
+            $validator = Validator::make($request->all(), [
+                'video_enlace' => 'required|url',
+            ], [
+                'video_enlace.required' => 'El enlace de la reunión virtual es obligatorio',
+                'video_enlace.url' => 'El enlace debe ser una URL válida',
+            ]);
+
+            if ($validator->fails()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Error de validación',
+                    'errors' => $validator->errors()
+                ], 422);
+            }
+
+            // Buscar la cita
+            $cita = Cita::find($citaId);
+
+            if (!$cita) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'La cita no existe'
+                ], 404);
+            }
+
+            // Verificar que la cita tenga un turno asignado (esté agendada)
+            $turno = Turno::find($cita->turno_id);
+            if (!$turno) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'La cita no tiene un turno asignado'
+                ], 422);
+            }
+
+            // Actualizar usando SQL directo para evitar problemas con updated_at
+            $now = Carbon::now('America/Lima')->format('Y-m-d H:i:s');
+            $videoEnlace = $request->video_enlace;
+
+            \Illuminate\Support\Facades\Log::info("CitaController::actualizarVideoEnlace - Actualizando enlace", [
+                'cita_id' => $citaId,
+                'video_enlace' => $videoEnlace,
+                'now' => $now,
+            ]);
+
+            try {
+                $rowsAffected = DB::connection('sqlsrv')->update(
+                    "UPDATE [citas] SET [video_enlace] = ?, [updated_at] = CONVERT(DATETIME, ?, 120) WHERE [id] = ?",
+                    [$videoEnlace, $now, $citaId]
+                );
+
+                if ($rowsAffected === 0) {
+                    \Illuminate\Support\Facades\Log::warning("CitaController::actualizarVideoEnlace - No se actualizó ninguna fila", [
+                        'cita_id' => $citaId,
+                    ]);
+                }
+
+                \Illuminate\Support\Facades\Log::info("CitaController::actualizarVideoEnlace - Enlace actualizado exitosamente", [
+                    'cita_id' => $citaId,
+                    'rows_affected' => $rowsAffected,
+                ]);
+
+            } catch (\Exception $updateException) {
+                \Illuminate\Support\Facades\Log::error("CitaController::actualizarVideoEnlace - Error en UPDATE", [
+                    'cita_id' => $citaId,
+                    'error' => $updateException->getMessage(),
+                    'trace' => $updateException->getTraceAsString(),
+                ]);
+                throw $updateException;
+            }
+
+            // Recargar la cita para obtener los datos actualizados
+            $cita->refresh();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Enlace de reunión virtual actualizado exitosamente',
+                'data' => [
+                    'cita_id' => $cita->id,
+                    'video_enlace' => $cita->video_enlace,
+                ]
+            ]);
+
+        } catch (\Exception $e) {
+            \Illuminate\Support\Facades\Log::error('Error al actualizar enlace de reunión virtual: ' . $e->getMessage(), [
+                'cita_id' => $citaId,
+                'trace' => $e->getTraceAsString(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al actualizar el enlace de reunión virtual',
+                'error' => $e->getMessage()
             ], 500);
         }
     }
