@@ -45,9 +45,13 @@ class ProtocoloAtencionController extends Controller
                 $queryBase->whereDoesntHave('derivado');
             }
 
-            // Aplicar filtros de terapeuta y mes (se aplican a TODOS los contadores)
+            // Aplicar filtros de terapeuta, paciente y mes (se aplican a TODOS los contadores)
             if ($request->filled('terapeuta_id') && $request->terapeuta_id !== 'todos') {
                 $queryBase->where('medico_id', $request->terapeuta_id);
+            }
+
+            if ($request->filled('paciente_id') && $request->paciente_id !== 'todos') {
+                $queryBase->where('paciente_id', $request->paciente_id);
             }
 
             if ($request->filled('mes') && $request->mes !== 'todos') {
@@ -118,6 +122,59 @@ class ProtocoloAtencionController extends Controller
     }
 
     /**
+     * Obtener lista de pacientes que tienen citas en el protocolo
+     * GET /api/protocolos/pacientes
+     */
+    public function pacientes(Request $request)
+    {
+        try {
+            $user = $request->user();
+
+            // Obtener pacientes únicos que tienen citas de riesgo moderado
+            $query = DB::table('citas')
+                ->join('usuarios as pacientes', 'citas.paciente_id', '=', 'pacientes.id')
+                ->whereExists(function ($query) {
+                    $query->selectRaw('1')
+                        ->from('phq9_responses')
+                        ->whereColumn('phq9_responses.user_id', 'pacientes.id')
+                        ->where('phq9_responses.riesgo', 'like', '%Moderado%');
+                })
+                ->orWhereExists(function ($query) {
+                    $query->selectRaw('1')
+                        ->from('gad_responses')
+                        ->whereColumn('gad_responses.user_id', 'pacientes.id')
+                        ->where('gad_responses.riesgo', 'like', '%Moderado%');
+                });
+
+            // Filtro automático por perfil: Si es psicólogo, solo ver sus pacientes
+            if ($user && $user->perfil) {
+                $nombrePerfil = strtolower($user->perfil->nombre_perfil ?? '');
+                if (strpos($nombrePerfil, 'psicologo') !== false || strpos($nombrePerfil, 'psicólogo') !== false) {
+                    $query->where('citas.medico_id', $user->id);
+                }
+            }
+
+            $pacientes = $query
+                ->select('pacientes.id', 'pacientes.nombre_completo', 'pacientes.cmp')
+                ->distinct()
+                ->orderBy('pacientes.nombre_completo')
+                ->get();
+
+            return response()->json([
+                'success' => true,
+                'data' => $pacientes
+            ]);
+
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al obtener pacientes',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
      * Listar atenciones/evaluaciones con filtros
      * GET /api/protocolos
      */
@@ -156,6 +213,10 @@ class ProtocoloAtencionController extends Controller
             // Filtros
             if ($request->filled('terapeuta_id') && $request->terapeuta_id !== 'todos') {
                 $query->where('medico_id', $request->terapeuta_id);
+            }
+
+            if ($request->filled('paciente_id') && $request->paciente_id !== 'todos') {
+                $query->where('paciente_id', $request->paciente_id);
             }
 
             if ($request->filled('mes') && $request->mes !== 'todos') {

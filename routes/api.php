@@ -416,6 +416,7 @@ Route::middleware(['auth:sanctum'])->group(function () {
 
     // Protocolos de Atención
     Route::get('/protocolos/stats', [ProtocoloAtencionController::class, 'stats']);
+    Route::get('/protocolos/pacientes', [ProtocoloAtencionController::class, 'pacientes']);
     Route::get('/protocolos', [ProtocoloAtencionController::class, 'index']);
     Route::post('/protocolos/agendar', [ProtocoloAtencionController::class, 'agendar']);
     Route::post('/protocolos/reprogramar', [ProtocoloAtencionController::class, 'reprogramar']);
