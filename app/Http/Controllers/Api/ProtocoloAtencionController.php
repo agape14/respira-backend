@@ -322,13 +322,26 @@ class ProtocoloAtencionController extends Controller
     public function show($citaId)
     {
         try {
+            \Log::info('ProtocoloAtencionController::show - Consultando protocolo', [
+                'cita_id' => $citaId
+            ]);
+
             $cita = Cita::with(['paciente', 'medico'])->findOrFail($citaId);
+
+            \Log::info('ProtocoloAtencionController::show - Cita encontrada', [
+                'cita_id' => $cita->id,
+                'paciente_id' => $cita->paciente_id,
+                'id_sesion' => $cita->id_sesion
+            ]);
 
             // Obtener datos de la sesión
             // Primero intentamos por id_sesion de la cita
             $sesion = null;
             if ($cita->id_sesion) {
                 $sesion = SesionUno::find($cita->id_sesion);
+                \Log::info('ProtocoloAtencionController::show - Sesión encontrada por id_sesion', [
+                    'sesion_id' => $sesion ? $sesion->id : null
+                ]);
             }
 
             // Si no hay id_sesion o no se encontró, buscar por paciente (última sesión)
@@ -336,6 +349,10 @@ class ProtocoloAtencionController extends Controller
                 $sesion = SesionUno::where('paciente_id', $cita->paciente_id)
                     ->orderBy('id', 'desc')
                     ->first();
+                \Log::info('ProtocoloAtencionController::show - Sesión buscada por paciente_id', [
+                    'sesion_id' => $sesion ? $sesion->id : null,
+                    'paciente_id' => $cita->paciente_id
+                ]);
             }
 
             // Enriquecer cita con números de intervención y sesión
@@ -386,6 +403,19 @@ class ProtocoloAtencionController extends Controller
                 }
             }
 
+            \Log::info('ProtocoloAtencionController::show - Respuesta preparada', [
+                'cita_id' => $citaId,
+                'sesion_id' => $sesion ? $sesion->id : null,
+                'sesion_datos' => $sesion ? [
+                    'id' => $sesion->id,
+                    'paciente_id' => $sesion->paciente_id,
+                    'nro_sesion' => $sesion->nro_sesion,
+                    'fecha_inicio' => $sesion->fecha_inicio
+                ] : null,
+                'esta_finalizada' => $esta_finalizada,
+                'esta_derivada' => $esta_derivada
+            ]);
+
             return response()->json([
                 'success' => true,
                 'data' => [
@@ -402,6 +432,12 @@ class ProtocoloAtencionController extends Controller
             ]);
 
         } catch (\Exception $e) {
+            \Log::error('ProtocoloAtencionController::show - Error al obtener protocolo', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+                'cita_id' => $citaId
+            ]);
+
             return response()->json([
                 'success' => false,
                 'message' => 'Error al obtener detalles del protocolo',
@@ -702,9 +738,21 @@ class ProtocoloAtencionController extends Controller
     public function save(Request $request)
     {
         try {
+            \Log::info('ProtocoloAtencionController::save - Iniciando guardado de sesión', [
+                'cita_id' => $request->cita_id,
+                'user_id' => $request->user()->id,
+                'datos_recibidos' => $request->except(['_token'])
+            ]);
+
             DB::connection('sqlsrv')->beginTransaction();
 
             $cita = Cita::findOrFail($request->cita_id);
+
+            \Log::info('ProtocoloAtencionController::save - Cita encontrada', [
+                'cita_id' => $cita->id,
+                'paciente_id' => $cita->paciente_id,
+                'id_sesion_actual' => $cita->id_sesion
+            ]);
 
             // Actualizar o Crear SesionUno
             // Si ya existe id_sesion, actualizamos. Si no, creamos.
@@ -712,10 +760,14 @@ class ProtocoloAtencionController extends Controller
             $sesion = null;
             if ($cita->id_sesion) {
                 $sesion = SesionUno::find($cita->id_sesion);
+                \Log::info('ProtocoloAtencionController::save - Sesión existente encontrada', [
+                    'sesion_id' => $sesion ? $sesion->id : null
+                ]);
             }
 
             if (!$sesion) {
                 // Crear nueva sesión
+                \Log::info('ProtocoloAtencionController::save - Creando nueva sesión');
                 $sesion = new SesionUno();
                 $sesion->paciente_id = $cita->paciente_id;
                 $sesion->user_id = $request->user()->id;
@@ -726,6 +778,11 @@ class ProtocoloAtencionController extends Controller
             // Actualizar campos recibidos
             $sesion->fill($request->except(['cita_id', 'estado']));
             $sesion->save();
+
+            \Log::info('ProtocoloAtencionController::save - Sesión guardada', [
+                'sesion_id' => $sesion->id,
+                'paciente_id' => $sesion->paciente_id
+            ]);
 
             // Vincular cita con sesión si no lo estaba y actualizar estado
             // Usar Query Builder directamente para evitar problemas con SQL Server y timestamps
@@ -743,7 +800,14 @@ class ProtocoloAtencionController extends Controller
                 ->where('id', $cita->id)
                 ->update($updateData);
 
+            \Log::info('ProtocoloAtencionController::save - Cita actualizada con estado 2');
+
             DB::connection('sqlsrv')->commit();
+
+            \Log::info('ProtocoloAtencionController::save - Sesión registrada exitosamente', [
+                'sesion_id' => $sesion->id,
+                'cita_id' => $cita->id
+            ]);
 
             return response()->json([
                 'success' => true,
@@ -752,6 +816,13 @@ class ProtocoloAtencionController extends Controller
 
         } catch (\Exception $e) {
             DB::connection('sqlsrv')->rollBack();
+
+            \Log::error('ProtocoloAtencionController::save - Error al guardar sesión', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+                'cita_id' => $request->cita_id ?? null
+            ]);
+
             return response()->json([
                 'success' => false,
                 'message' => 'Error al guardar sesión',
