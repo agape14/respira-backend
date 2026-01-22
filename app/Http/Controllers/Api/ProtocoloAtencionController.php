@@ -23,16 +23,18 @@ class ProtocoloAtencionController extends Controller
         try {
             $user = $request->user();
 
-            // Scope de Riesgo Moderado o Alto
+            // Scope de Riesgo: Leve, Moderado o Alto
             $queryBase = Cita::whereHas('paciente', function ($query) {
                 $query->whereHas('phq9Responses', function ($q) {
                     $q->where(function ($q2) {
-                        $q2->where('riesgo', 'like', '%Moderado%')
+                        $q2->where('riesgo', 'like', '%leve%')
+                           ->orWhere('riesgo', 'like', '%Moderado%')
                            ->orWhere('riesgo', 'like', '%alto%');
                     });
                 })->orWhereHas('gadResponses', function ($q) {
                     $q->where(function ($q2) {
-                        $q2->where('riesgo', 'like', '%Moderado%')
+                        $q2->where('riesgo', 'like', '%leve%')
+                           ->orWhere('riesgo', 'like', '%Moderado%')
                            ->orWhere('riesgo', 'like', '%alto%');
                     });
                 });
@@ -136,7 +138,7 @@ class ProtocoloAtencionController extends Controller
         try {
             $user = $request->user();
 
-            // Obtener pacientes únicos que tienen citas de riesgo moderado o alto
+            // Obtener pacientes únicos que tienen citas de riesgo leve, moderado o alto
             $query = DB::table('citas')
                 ->join('usuarios as pacientes', 'citas.paciente_id', '=', 'pacientes.id')
                 ->where(function ($query) {
@@ -145,7 +147,8 @@ class ProtocoloAtencionController extends Controller
                             ->from('phq9_responses')
                             ->whereColumn('phq9_responses.user_id', 'pacientes.id')
                             ->where(function ($q) {
-                                $q->where('phq9_responses.riesgo', 'like', '%Moderado%')
+                                $q->where('phq9_responses.riesgo', 'like', '%leve%')
+                                  ->orWhere('phq9_responses.riesgo', 'like', '%Moderado%')
                                   ->orWhere('phq9_responses.riesgo', 'like', '%alto%');
                             });
                     })
@@ -154,7 +157,8 @@ class ProtocoloAtencionController extends Controller
                             ->from('gad_responses')
                             ->whereColumn('gad_responses.user_id', 'pacientes.id')
                             ->where(function ($q) {
-                                $q->where('gad_responses.riesgo', 'like', '%Moderado%')
+                                $q->where('gad_responses.riesgo', 'like', '%leve%')
+                                  ->orWhere('gad_responses.riesgo', 'like', '%Moderado%')
                                   ->orWhere('gad_responses.riesgo', 'like', '%alto%');
                             });
                     });
@@ -202,16 +206,18 @@ class ProtocoloAtencionController extends Controller
             $eagerLoad = ['paciente', 'medico', 'turno', 'finalizado.usuario', 'derivado.especialista'];
 
             $query = Cita::with($eagerLoad)
-                // Scope de Riesgo Moderado o Alto
+                // Scope de Riesgo: Leve, Moderado o Alto
                 ->whereHas('paciente', function ($query) {
                     $query->whereHas('phq9Responses', function ($q) {
                         $q->where(function ($q2) {
-                            $q2->where('riesgo', 'like', '%Moderado%')
+                            $q2->where('riesgo', 'like', '%leve%')
+                               ->orWhere('riesgo', 'like', '%Moderado%')
                                ->orWhere('riesgo', 'like', '%alto%');
                         });
                     })->orWhereHas('gadResponses', function ($q) {
                         $q->where(function ($q2) {
-                            $q2->where('riesgo', 'like', '%Moderado%')
+                            $q2->where('riesgo', 'like', '%leve%')
+                               ->orWhere('riesgo', 'like', '%Moderado%')
                                ->orWhere('riesgo', 'like', '%alto%');
                         });
                     });

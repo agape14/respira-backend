@@ -893,17 +893,19 @@ class CitaController extends Controller
     public function pacientesRiesgoModerado()
     {
         try {
-            // Incluir pacientes con riesgo Moderado O Alto
+            // Incluir pacientes con riesgo Leve, Moderado o Alto
             $pacientes = Usuario::where(function ($query) {
                     $query->whereHas('phq9Responses', function ($q) {
                         $q->where(function ($q2) {
-                            $q2->where('riesgo', 'like', '%Moderado%')
+                            $q2->where('riesgo', 'like', '%leve%')
+                               ->orWhere('riesgo', 'like', '%Moderado%')
                                ->orWhere('riesgo', 'like', '%alto%');
                         });
                     })
                     ->orWhereHas('gadResponses', function ($q) {
                         $q->where(function ($q2) {
-                            $q2->where('riesgo', 'like', '%Moderado%')
+                            $q2->where('riesgo', 'like', '%leve%')
+                               ->orWhere('riesgo', 'like', '%Moderado%')
                                ->orWhere('riesgo', 'like', '%alto%');
                         });
                     });
