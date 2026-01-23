@@ -732,6 +732,151 @@ class ProtocoloAtencionController extends Controller
     }
 
     /**
+     * Límites de caracteres para campos de sesión
+     * Estos valores deben coincidir con la estructura de la tabla sesionUno en SQL Server
+     */
+    private const FIELD_LIMITS = [
+        // Campos de texto corto (255 caracteres)
+        'donde_vives' => 255,
+        'con_quien' => 255,
+        'tiempo_en_casa' => 255,
+        'estudiando' => 255,
+        'usa_productos' => 255,
+        'ejercicio_regular' => 255,
+        'tiempo_empezo' => 255,
+        'tiempo_notado' => 255,
+        'tiempo_problema' => 255,
+
+        // Campos de texto medio (500 caracteres)
+        'bien_en_casa' => 500,
+        'relaciones_afectuosas' => 500,
+        'comodo_en_trabajo' => 500,
+        'estres_en_trabajo' => 500,
+        'preocupaciones' => 500,
+        'comes_duermes_bien' => 500,
+        'que_haces_divertirte' => 500,
+        'que_haces_relajarte' => 500,
+        'conectarte_comunidad' => 500,
+        'problema_motiva' => 500,
+        'disparadores_existe' => 500,
+        'trayectoria_problema' => 500,
+        'trayectoria_habido' => 500,
+        'trayectoria_reciente' => 500,
+        'severidad_grande' => 500,
+        'intentos_solucion' => 500,
+        'costes_funcion' => 500,
+        'costes_plazo' => 500,
+        'costes_problema' => 500,
+        'costes_pensando' => 500,
+        'apertura' => 500,
+        'consciencia' => 500,
+        'hacer_importa' => 500,
+        'establecimiento' => 500,
+
+        // Campos de texto largo (1000 caracteres)
+        'intervencion' => 1000,
+        'recomendacionsesionuno' => 1000,
+        'sesiondos_revision' => 1000,
+        'sesiondos_intervencion' => 1000,
+        'sesiondos_progreso' => 1000,
+        'recomendacionsesiondos' => 1000,
+        'sesiontres_revision' => 1000,
+        'sesiontres_intervencion' => 1000,
+        'sesiontres_progreso' => 1000,
+        'recomendacionsesiontres' => 1000,
+        'sesioncuatro_revision' => 1000,
+        'sesioncuatro_intervencion' => 1000,
+        'sesioncuatro_progreso' => 1000,
+        'recomendacionsesioncuatro' => 1000,
+    ];
+
+    /**
+     * Nombres amigables para los campos (para mensajes de error)
+     */
+    private const FIELD_LABELS = [
+        'donde_vives' => 'Lugar de residencia',
+        'con_quien' => 'Estado civil y composición familiar',
+        'tiempo_en_casa' => 'Tiempo en residencia actual',
+        'bien_en_casa' => 'Bienestar en casa',
+        'relaciones_afectuosas' => 'Relaciones afectuosas',
+        'comodo_en_trabajo' => 'Ocupación actual y lugar de SERUMS',
+        'estres_en_trabajo' => 'Estrés en trabajo',
+        'estudiando' => 'Nivel educativo y formación profesional',
+        'preocupaciones' => 'Preocupaciones',
+        'usa_productos' => 'Uso de productos',
+        'ejercicio_regular' => 'Ejercicio regular',
+        'comes_duermes_bien' => 'Alimentación y sueño',
+        'que_haces_divertirte' => 'Actividades de diversión',
+        'que_haces_relajarte' => 'Actividades de relajación',
+        'conectarte_comunidad' => 'Conexión con comunidad',
+        'problema_motiva' => 'Motivo principal de consulta',
+        'tiempo_empezo' => 'Inicio de síntomas',
+        'tiempo_notado' => 'Tiempo notado',
+        'tiempo_problema' => 'Tiempo del problema',
+        'disparadores_existe' => 'Factores desencadenantes',
+        'trayectoria_problema' => 'Trayectoria del problema',
+        'trayectoria_habido' => 'Trayectoria habida',
+        'trayectoria_reciente' => 'Trayectoria reciente',
+        'severidad_grande' => 'Severidad percibida',
+        'intentos_solucion' => 'Intentos de solución previos',
+        'costes_funcion' => 'Funcionamiento a corto plazo',
+        'costes_plazo' => 'Funcionamiento a largo plazo',
+        'costes_problema' => 'Costes y Consecuencias',
+        'costes_pensando' => 'Costes pensando',
+        'apertura' => 'Apertura',
+        'consciencia' => 'Consciencia',
+        'hacer_importa' => 'Hacer lo que importa',
+        'establecimiento' => 'Establecimiento de Objetivos',
+        'intervencion' => 'Intervención Breve',
+        'recomendacionsesionuno' => 'Recomendaciones Sesión 1',
+        'sesiondos_revision' => 'Revisión del Plan (Sesión 2)',
+        'sesiondos_intervencion' => 'Intervención (Sesión 2)',
+        'sesiondos_progreso' => 'Progreso (Sesión 2)',
+        'recomendacionsesiondos' => 'Recomendaciones (Sesión 2)',
+        'sesiontres_revision' => 'Revisión del Plan (Sesión 3)',
+        'sesiontres_intervencion' => 'Intervención (Sesión 3)',
+        'sesiontres_progreso' => 'Progreso (Sesión 3)',
+        'recomendacionsesiontres' => 'Recomendaciones (Sesión 3)',
+        'sesioncuatro_revision' => 'Revisión del Plan (Sesión 4)',
+        'sesioncuatro_intervencion' => 'Intervención (Sesión 4)',
+        'sesioncuatro_progreso' => 'Progreso (Sesión 4)',
+        'recomendacionsesioncuatro' => 'Recomendaciones (Sesión 4)',
+    ];
+
+    /**
+     * Obtener límites de caracteres para el frontend
+     * GET /api/protocolos/field-limits
+     */
+    public function getFieldLimits()
+    {
+        return response()->json([
+            'success' => true,
+            'data' => self::FIELD_LIMITS
+        ]);
+    }
+
+    /**
+     * Validar longitud de campos
+     * Retorna array de errores si hay campos que exceden el límite
+     */
+    private function validateFieldLengths(array $data): array
+    {
+        $errors = [];
+
+        foreach (self::FIELD_LIMITS as $field => $maxLength) {
+            if (isset($data[$field]) && is_string($data[$field])) {
+                $currentLength = mb_strlen($data[$field]);
+                if ($currentLength > $maxLength) {
+                    $label = self::FIELD_LABELS[$field] ?? $field;
+                    $errors[$field] = "El campo \"{$label}\" excede el límite de {$maxLength} caracteres (tiene {$currentLength} caracteres)";
+                }
+            }
+        }
+
+        return $errors;
+    }
+
+    /**
      * Guardar/Registrar sesión
      * POST /api/protocolos/save
      */
@@ -743,6 +888,21 @@ class ProtocoloAtencionController extends Controller
                 'user_id' => $request->user()->id,
                 'datos_recibidos' => $request->except(['_token'])
             ]);
+
+            // Validar longitud de campos ANTES de iniciar la transacción
+            $fieldErrors = $this->validateFieldLengths($request->all());
+            if (!empty($fieldErrors)) {
+                \Log::warning('ProtocoloAtencionController::save - Campos exceden límite de caracteres', [
+                    'errors' => $fieldErrors
+                ]);
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Algunos campos exceden el límite de caracteres permitido',
+                    'errors' => $fieldErrors,
+                    'field_errors' => array_keys($fieldErrors)
+                ], 422);
+            }
 
             DB::connection('sqlsrv')->beginTransaction();
 

@@ -422,6 +422,7 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::post('/protocolos/reprogramar', [ProtocoloAtencionController::class, 'reprogramar']);
 
     // Rutas específicas antes de la ruta genérica {id}
+    Route::get('/protocolos/field-limits', [ProtocoloAtencionController::class, 'getFieldLimits']);
     Route::get('/protocolos/especialistas-derivacion', [ProtocoloAtencionController::class, 'getEspecialistasDerivacion']);
     Route::get('/protocolos/derivacion/{cita_id}', [ProtocoloAtencionController::class, 'getDerivacion']);
     Route::post('/protocolos/derivar', [ProtocoloAtencionController::class, 'derivar']);
