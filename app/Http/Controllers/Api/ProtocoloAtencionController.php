@@ -1128,6 +1128,96 @@ class ProtocoloAtencionController extends Controller
             ], 500);
         }
     }
+
+    /**
+     * Habilitar atención / Habilitar edición
+     * Pone la cita en estado 1 (Por atender) para poder llenar o editar el protocolo.
+     * Si la cita tenía registro en citas_finalizados (intervención finalizada), se elimina
+     * para que vuelva a poder registrarse la atención.
+     * Permitido solo para perfiles: Administrador (id 1) y Psicólogo (id 10).
+     * POST /api/protocolos/habilitar_atencion
+     */
+    public function habilitarAtencion(Request $request)
+    {
+        try {
+            $request->validate(['cita_id' => 'required|integer']);
+
+            $user = $request->user();
+            $perfilId = (int) ($user->perfil_id ?? 0);
+
+            // Solo perfiles Administrador (1) y Psicólogo (10)
+            $perfilesPermitidos = [1, 10];
+            if (!in_array($perfilId, $perfilesPermitidos, true)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No tiene permiso para habilitar atención. Solo Administrador y Psicólogo.'
+                ], 403);
+            }
+
+            DB::connection('sqlsrv')->beginTransaction();
+
+            $cita = Cita::findOrFail($request->cita_id);
+
+            // Psicólogo (10): solo puede habilitar sus propias citas
+            if ($perfilId === 10) {
+                if ((int) $cita->medico_id !== (int) $user->id) {
+                    DB::connection('sqlsrv')->rollBack();
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Solo puede habilitar atención en sus propias citas.'
+                    ], 403);
+                }
+            }
+
+            // Solo si la cita está finalizada: eliminar el registro en citas_finalizados.
+            // Así la cita deja de considerarse "finalizada" y se puede volver a llenar/registrar la atención.
+            $estaFinalizada = DB::connection('sqlsrv')
+                ->table('citas_finalizados')
+                ->where('cita_id', $cita->id)
+                ->exists();
+            if ($estaFinalizada) {
+                DB::connection('sqlsrv')
+                    ->table('citas_finalizados')
+                    ->where('cita_id', $cita->id)
+                    ->delete();
+            }
+
+            // Poner cita en estado 1 (Por atender) para permitir llenar o editar el protocolo
+            DB::connection('sqlsrv')
+                ->table('citas')
+                ->where('id', $cita->id)
+                ->update([
+                    'estado' => 1,
+                    'updated_at' => DB::raw("GETDATE()")
+                ]);
+
+            DB::connection('sqlsrv')->commit();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Atención habilitada. La cita queda como "Por atender" y puede llenar o editar el protocolo.'
+            ]);
+
+        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+            if (DB::connection('sqlsrv')->transactionLevel() > 0) {
+                DB::connection('sqlsrv')->rollBack();
+            }
+            return response()->json([
+                'success' => false,
+                'message' => 'Cita no encontrada'
+            ], 404);
+        } catch (\Exception $e) {
+            if (DB::connection('sqlsrv')->transactionLevel() > 0) {
+                DB::connection('sqlsrv')->rollBack();
+            }
+            return response()->json([
+                'success' => false,
+                'message' => 'Error al habilitar atención',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
     /**
      * Obtener especialistas para derivación (CENATE)
      * GET /api/protocolos/especialistas-derivacion

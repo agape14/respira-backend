@@ -433,6 +433,7 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::get('/protocolos/pdf/{paciente_id}', [ProtocoloAtencionController::class, 'generarPdf']);
     Route::post('/protocolos/cancelar', [ProtocoloAtencionController::class, 'cancelar']);
     Route::post('/protocolos/no_presento', [ProtocoloAtencionController::class, 'noPresento']);
+    Route::post('/protocolos/habilitar_atencion', [ProtocoloAtencionController::class, 'habilitarAtencion']);
 
     // Derivaciones
     Route::get('/derivaciones/stats', [DerivacionController::class, 'stats']);
