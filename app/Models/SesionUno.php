@@ -45,6 +45,7 @@ class SesionUno extends Model
         'tiempo_notado',
         'tiempo_problema',
         'disparadores_existe',
+        'disparadores_check',
         'trayectoria_problema',
         'trayectoria_habido',
         'trayectoria_reciente',
@@ -83,6 +84,7 @@ class SesionUno extends Model
      */
     protected $casts = [
         'fecha_inicio' => 'datetime',
+        'disparadores_check' => 'array',
     ];
 
     /**

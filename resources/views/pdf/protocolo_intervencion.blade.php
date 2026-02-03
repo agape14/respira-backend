@@ -4,19 +4,19 @@
 <meta charset="utf-8">
 <title>Protocolo de Atención Psicológica</title>
 <style>
-    @page { 
-        size: A4; 
-        margin: 15mm 12mm 15mm 12mm; 
+    @page {
+        size: A4;
+        margin: 15mm 12mm 15mm 12mm;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { 
-        font-family: DejaVu Sans, Arial, sans-serif; 
-        font-size: 9px; 
-        color: #333; 
-        line-height: 1.3; 
+    body {
+        font-family: DejaVu Sans, Arial, sans-serif;
+        font-size: 9px;
+        color: #333;
+        line-height: 1.3;
         background: #fff;
     }
-    
+
     /* Header institucional */
     .header {
         background: #752568;
@@ -25,15 +25,15 @@
         border-radius: 6px;
         margin-bottom: 12px;
     }
-    .header-title { 
-        font-size: 14px; 
-        font-weight: 700; 
+    .header-title {
+        font-size: 14px;
+        font-weight: 700;
         margin-bottom: 3px;
         letter-spacing: 0.3px;
     }
-    .header-subtitle { 
-        font-size: 9px; 
-        opacity: 0.85; 
+    .header-subtitle {
+        font-size: 9px;
+        opacity: 0.85;
     }
     .header-info {
         margin-top: 8px;
@@ -47,7 +47,7 @@
     }
     .header-label { opacity: 0.8; }
     .header-value { font-weight: 600; }
-    
+
     .badge {
         display: inline-block;
         padding: 3px 8px;
@@ -73,7 +73,7 @@
         border-radius: 4px;
         margin-bottom: 8px;
     }
-    
+
     /* Subsecciones */
     .subsection {
         background: #f8f4f7;
@@ -164,8 +164,8 @@
     }
 
     /* Separador de página */
-    .page-break { 
-        page-break-before: always; 
+    .page-break {
+        page-break-before: always;
     }
 
     /* Sesiones 2-4 compactas */
@@ -228,7 +228,7 @@
 <!-- SESIÓN 1 -->
 <div class="section">
     <div class="section-title">SESIÓN 1 - ENTREVISTA CONTEXTUAL</div>
-    
+
     <!-- Relaciones -->
     <div class="subsection">
         <div class="subsection-title">Relaciones</div>
@@ -361,7 +361,7 @@
 <!-- Contexto del Problema -->
 <div class="section">
     <div class="section-title">CONTEXTO DEL PROBLEMA</div>
-    
+
     <div class="subsection">
         <div class="subsection-title">Problema y Tiempo</div>
         <table class="fields-table">
@@ -396,8 +396,12 @@
                 </td>
                 <td class="col-half">
                     <div class="field">
-                        <span class="field-label">¿Algo que parezca activarlo?</span>
-                        <span class="field-value {{ empty($sesion['disparadores_existe']) ? 'field-empty' : '' }}">{{ $sesion['disparadores_existe'] ?? 'Sin respuesta' }}</span>
+                        <span class="field-label">¿Qué factores desencadenaron la situación actual?</span>
+                        @if(isset($disparadores_text) && !empty($disparadores_text) && is_array($disparadores_text))
+                            <span class="field-value">{{ implode('; ', $disparadores_text) }}</span>
+                        @else
+                            <span class="field-value {{ empty($sesion['disparadores_existe']) ? 'field-empty' : '' }}">{{ $sesion['disparadores_existe'] ?? 'Sin respuesta' }}</span>
+                        @endif
                     </div>
                 </td>
             </tr>
@@ -444,7 +448,7 @@
 <!-- Desesperanza Creativa -->
 <div class="section">
     <div class="section-title">DESESPERANZA CREATIVA</div>
-    
+
     <div class="subsection">
         <div class="subsection-title">Intentos de Solución y Consecuencias</div>
         <table class="fields-table">
@@ -491,7 +495,7 @@
 <!-- Conceptualización -->
 <div class="section">
     <div class="section-title">CONCEPTUALIZACIÓN DEL PROBLEMA</div>
-    
+
     <div class="subsection">
         <div class="subsection-title">Pilares de FACT</div>
         <table class="fields-table">
@@ -522,7 +526,7 @@
 <!-- Objetivos e Intervención Sesión 1 -->
 <div class="section">
     <div class="section-title">OBJETIVOS E INTERVENCIÓN - SESIÓN 1</div>
-    
+
     <div class="subsection">
         <div class="textarea-field">
             <span class="textarea-label">Establecimiento de Objetivos</span>
@@ -542,7 +546,7 @@
 <!-- SESIONES 2, 3 y 4 -->
 <div class="section">
     <div class="section-title">SESIONES DE SEGUIMIENTO</div>
-    
+
     <!-- Sesión 2 -->
     <div class="session-card">
         <div class="session-header">Sesión 2</div>

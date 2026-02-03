@@ -844,6 +844,64 @@ class ProtocoloAtencionController extends Controller
     ];
 
     /**
+     * Etiquetas para los checks de factores desencadenantes (pregunta 9). Mismo orden que el frontend.
+     */
+    private const DISPARADORES_CHECK_LABELS = [
+        'sobrecarga_laboral' => 'Sobrecarga laboral (guardias frecuentes, múltiples funciones no previstas)',
+        'ambiguedad_rol' => 'Ambigüedad de rol (funciones poco claras, tareas administrativas excesivas)',
+        'falta_supervision_clinica' => 'Falta de supervisión clínica o acompañamiento profesional',
+        'conflictos_jefaturas' => 'Conflictos con jefaturas, coordinadores o personal del establecimiento',
+        'presion_asistencial_sin_recursos' => 'Presión asistencial sin recursos suficientes',
+        'responsabilidad_clinica_desproporcionada' => 'Responsabilidad clínica percibida como desproporcionada a la experiencia',
+        'exposicion_sufrimiento_muerte' => 'Exposición frecuente a sufrimiento, muerte o eventos críticos',
+        'deficiencia_insumos_medicamentos' => 'Deficiencia de insumos, medicamentos o equipamiento básico',
+        'infraestructura_inadecuada' => 'Infraestructura inadecuada del establecimiento',
+        'procesos_administrativos_engorrosos' => 'Procesos administrativos engorrosos o punitivos',
+        'sensacion_abandono_institucional' => 'Sensación de abandono institucional',
+        'dificultades_permisos_descansos' => 'Dificultades para permisos, descansos o licencias',
+        'incertidumbre_pagos_contratos' => 'Incertidumbre sobre pagos, contratos o beneficios',
+        'falta_canales_queja_soporte' => 'Falta de canales claros de queja o soporte',
+        'aislamiento_geografico' => 'Aislamiento geográfico significativo',
+        'dificultad_acceso_transporte' => 'Dificultad para acceso a transporte o comunicación',
+        'limitado_acceso_internet' => 'Limitado acceso a internet o telefonía estable',
+        'clima_extremo' => 'Clima extremo o condiciones ambientales adversas',
+        'barreras_culturales_linguisticas' => 'Barreras culturales o lingüísticas con la población atendida',
+        'sensacion_inseguridad_zona' => 'Sensación de inseguridad en la zona de trabajo o vivienda',
+        'trato_humillante_descalificaciones' => 'Trato humillante, descalificaciones o ridiculización reiterada',
+        'supervision_excesiva_punitiva' => 'Supervisión excesiva, punitiva o intimidatoria',
+        'tareas_degradantes_castigo' => 'Asignación de tareas degradantes o fuera de funciones como castigo',
+        'amenazas_contrato_evaluacion' => 'Amenazas implícitas o explícitas relacionadas al contrato o evaluación',
+        'exclusion_deliberada' => 'Exclusión deliberada de reuniones, decisiones o comunicación relevante',
+        'mensajes_hostiles' => 'Mensajes hostiles, sarcásticos o intimidantes (presenciales o virtuales)',
+        'sensacion_hostilidad_ambiente' => 'Sensación persistente de hostilidad en el ambiente laboral',
+        'comentarios_sexuales_no_deseados' => 'Comentarios sexuales no deseados sobre el cuerpo o apariencia',
+        'insinuaciones_bromas_sexuales' => 'Insinuaciones, bromas sexuales o "halagos" incómodos',
+        'miradas_gestos_connotacion_sexual' => 'Miradas, gestos o mensajes con connotación sexual',
+        'contacto_fisico_no_consentido' => 'Contacto físico no consentido',
+        'solicitudes_sexuales_explicitas' => 'Solicitudes sexuales explícitas o implícitas',
+        'condicionamiento_evaluaciones_favores' => 'Condicionamiento de evaluaciones, beneficios o trato a favores sexuales',
+        'temor_represalias_denuncia' => 'Temor a represalias si se rechaza o denuncia',
+        'normalizacion_maltrato_serums' => 'Normalización del maltrato como "parte del SERUMS"',
+        'invalidacion_emocional' => 'Invalidación emocional ("todos pasan por eso", "así es la posta")',
+        'minimizacion_denuncias' => 'Minimización de denuncias o quejas',
+        'falta_respuesta_situaciones' => 'Falta de respuesta ante situaciones reportadas',
+        'sensacion_indefension_jerarquia' => 'Sensación de indefensión frente a la jerarquía',
+        'miedo_consecuencias_hablar' => 'Miedo a consecuencias profesionales por hablar',
+        'agresiones_verbales_pacientes' => 'Agresiones verbales por pacientes o familiares',
+        'amenazas_directas_veladas' => 'Amenazas directas o veladas',
+        'intentos_agresion_fisica' => 'Intentos de agresión física',
+        'falta_protocolos_seguridad' => 'Falta de protocolos de seguridad en el establecimiento',
+        'sensacion_riesgo_personal' => 'Sensación constante de riesgo personal',
+        'presenciado_violencia_colega' => 'Haber presenciado violencia hacia otros colegas',
+        'trato_diferenciado_genero' => 'Trato diferenciado por género',
+        'trato_discriminatorio_edad' => 'Trato discriminatorio por edad o condición de serumista',
+        'discriminacion_origen_etnico' => 'Discriminación por origen étnico, idioma o lugar de procedencia',
+        'discriminacion_orientacion_identidad' => 'Discriminación por orientación sexual o identidad de género',
+        'estigmatizacion_salud_mental' => 'Estigmatización por pedir ayuda en salud mental',
+        'comentarios_desvalorizantes_profesion' => 'Comentarios desvalorizantes sobre la profesión médica joven',
+    ];
+
+    /**
      * Obtener límites de caracteres para el frontend
      * GET /api/protocolos/field-limits
      */
@@ -1631,9 +1689,23 @@ class ProtocoloAtencionController extends Controller
                 ->select('id', DB::raw("CONCAT(nombre, ' ', apellido) as nombre_completo"), 'cmp as dni')
                 ->first();
 
+            $sesionArray = $sesion->toArray();
+            $disparadoresCheck = $sesionArray['disparadores_check'] ?? [];
+            $disparadoresText = [];
+            if (!empty($disparadoresCheck) && is_array($disparadoresCheck)) {
+                foreach ($disparadoresCheck as $key) {
+                    if ($key === 'otros') {
+                        $texto = trim($sesionArray['disparadores_existe'] ?? '');
+                        $disparadoresText[] = $texto !== '' ? 'Otros: ' . $texto : 'Otros (sin especificar)';
+                    } else {
+                        $disparadoresText[] = self::DISPARADORES_CHECK_LABELS[$key] ?? $key;
+                    }
+                }
+            }
             $data = [
-                'sesion' => $sesion->toArray(),
-                'paciente' => $paciente
+                'sesion' => $sesionArray,
+                'paciente' => $paciente,
+                'disparadores_text' => $disparadoresText,
             ];
 
             $pdf = Pdf::loadView('pdf.protocolo_intervencion', $data);
