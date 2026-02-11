@@ -65,6 +65,22 @@ class ResultadoTamizajeController extends Controller
             $tipo = $request->get('tipo');
             $fechaInicio = $request->get('fecha_inicio');
             $fechaFin = $request->get('fecha_fin');
+            $idProceso = $request->get('id_proceso');
+            $idProceso = (isset($idProceso) && $idProceso !== '' && ctype_digit((string) $idProceso)) ? (int) $idProceso : null;
+
+            $proceso = null;
+            $corteEtiqueta = '';
+            if ($idProceso !== null) {
+                try {
+                    $proceso = DB::connection('sqlsrv')->table('procesos')->where('id_proceso', $idProceso)->first();
+                    if ($proceso && !empty($proceso->etiqueta)) {
+                        $corteEtiqueta = $proceso->etiqueta;
+                    }
+                } catch (\Throwable $e) {
+                    $proceso = null;
+                    $corteEtiqueta = '';
+                }
+            }
 
             // CTE para preparar los datos y calcular la fecha de última evaluación
             // Cambio: partir desde usuarios (que tienen evaluaciones) y hacer LEFT JOIN a serumistas
@@ -79,10 +95,10 @@ class ResultadoTamizajeController extends Controller
                         asq.resultado AS asq, asq.fecha_registro AS asq_fecha, asq.id AS asq_id,
                         phq.riesgo AS phq, phq.puntaje AS phq_puntaje, phq.fecha AS phq_fecha, phq.id_encuesta AS phq_id,
                         gad.riesgo AS gad, gad.puntaje AS gad_puntaje, gad.fecha AS gad_fecha, gad.id_encuesta AS gad_id,
-                        CONCAT(mbi.riesgoCE, '-', mbi.riesgoDP, '-', mbi.riesgoRP) AS mbi, mbi.fecha AS mbi_fecha, mbi.id_encuesta AS mbi_id,
+                        (ISNULL(CAST(mbi.riesgoCE AS NVARCHAR(50)), N'') + N'-' + ISNULL(CAST(mbi.riesgoDP AS NVARCHAR(50)), N'') + N'-' + ISNULL(CAST(mbi.riesgoRP AS NVARCHAR(50)), N'')) AS mbi, mbi.fecha AS mbi_fecha, mbi.id_encuesta AS mbi_id,
                         audit.riesgo AS audit, audit.puntaje AS audit_puntaje, audit.fecha AS audit_fecha, audit.id_encuesta AS audit_id,
 
-                        (SELECT MAX(v) FROM (VALUES (asq.fecha_registro), (phq.fecha), (gad.fecha), (mbi.fecha), (audit.fecha)) AS value(v)) as fecha_ultima_evaluacion
+                        (SELECT MAX(f) FROM (SELECT asq.fecha_registro AS f UNION ALL SELECT phq.fecha UNION ALL SELECT gad.fecha UNION ALL SELECT mbi.fecha UNION ALL SELECT audit.fecha) AS fechas) as fecha_ultima_evaluacion
 
                     FROM usuarios u
                     LEFT JOIN serumista_remunerados s ON u.cmp = s.CMP
@@ -130,6 +146,12 @@ class ResultadoTamizajeController extends Controller
                 $params[] = $fechaFin;
             }
 
+            if ($proceso) {
+                $where .= " AND CAST(fecha_ultima_evaluacion AS DATE) >= CAST(? AS DATE) AND CAST(fecha_ultima_evaluacion AS DATE) <= CAST(? AS DATE)";
+                $params[] = $proceso->fecha_inicio;
+                $params[] = $proceso->fecha_fin;
+            }
+
             // Contar total de registros
             $countSql = $cte . " SELECT COUNT(*) as total FROM TamizajeData" . $where;
             $totalResult = DB::connection('sqlsrv')->select($countSql, $params);
@@ -146,8 +168,24 @@ class ResultadoTamizajeController extends Controller
 
             $resultados = DB::connection('sqlsrv')->select($dataSql, $params);
 
+            // Cargar procesos activos para asignar etiqueta por fecha (probar sqlsrv y luego conexión por defecto)
+            $procesosList = [];
+            try {
+                $procesosList = DB::connection('sqlsrv')->table('procesos')->where('activo', 1)->orderBy('fecha_inicio')->get();
+                if ($procesosList->isEmpty()) {
+                    $procesosList = DB::table('procesos')->where('activo', 1)->orderBy('fecha_inicio')->get();
+                }
+            } catch (\Throwable $e) {
+                try {
+                    $procesosList = DB::table('procesos')->where('activo', 1)->orderBy('fecha_inicio')->get();
+                } catch (\Throwable $e2) {
+                    // ignorar
+                }
+            }
+            $procesosList = collect($procesosList ?? []);
+
             // Procesar los resultados
-            $data = array_map(function ($item) {
+            $data = array_map(function ($item) use ($corteEtiqueta, $proceso, $procesosList) {
                 $completadas = 0;
                 $totalEvaluaciones = 5;
 
@@ -157,6 +195,26 @@ class ResultadoTamizajeController extends Controller
                 if (!empty($item->mbi_id)) $completadas++;
                 if (!empty($item->audit_id)) $completadas++;
 
+                // Etiqueta: si hay filtro por corte usarla; si no, calcular por fecha_ultima_evaluacion
+                $etiqueta = $corteEtiqueta;
+                if (empty($etiqueta) && $item->fecha_ultima_evaluacion && $procesosList->isNotEmpty()) {
+                    $fecha = $item->fecha_ultima_evaluacion;
+                    $f = $fecha instanceof \DateTimeInterface ? $fecha->format('Y-m-d') : (is_string($fecha) ? substr($fecha, 0, 10) : (string) $fecha);
+                    foreach ($procesosList as $p) {
+                        if (!empty($p->fecha_inicio) && !empty($p->fecha_fin) && !empty($p->etiqueta)) {
+                            $inicio = $p->fecha_inicio instanceof \DateTimeInterface ? $p->fecha_inicio->format('Y-m-d') : substr((string) $p->fecha_inicio, 0, 10);
+                            $fin = $p->fecha_fin instanceof \DateTimeInterface ? $p->fecha_fin->format('Y-m-d') : substr((string) $p->fecha_fin, 0, 10);
+                            if ($f >= $inicio && $f <= $fin) {
+                                $etiqueta = $p->etiqueta;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if ($etiqueta === '') {
+                    $etiqueta = '-';
+                }
+
                 return [
                     'id' => $item->id,
                     'dni' => $item->dni ?? '',
@@ -164,6 +222,7 @@ class ResultadoTamizajeController extends Controller
                     'nombre_completo' => $item->nombre_completo ?? '',
                     'completadas' => $completadas,
                     'total_evaluaciones' => $totalEvaluaciones,
+                    'corte_etiqueta' => $etiqueta,
                     'asq' => $item->asq ?? null,
                     'asq_fecha' => $item->asq_fecha ?? null,
                     'phq' => $item->phq ?? null,
@@ -357,30 +416,60 @@ class ResultadoTamizajeController extends Controller
         }
     }
 
-    public function exportarIndividual($dni)
+    public function exportarIndividual(Request $request, $dni)
     {
-        return $this->generarExcel($dni, null);
+        // Individual: no filtrar por proceso; permitir buscar por CMP si viene para localizar al serumista
+        $cmp = $request->get('cmp');
+        return $this->generarExcel($dni, null, null, $cmp);
     }
 
     public function exportarTodo(Request $request)
     {
         $search = $request->get('search');
-        return $this->generarExcel(null, $search);
+        $idProceso = $request->get('id_proceso');
+        return $this->generarExcel(null, $search, $idProceso, null);
     }
 
-    private function generarExcel($dni = null, $search = null)
+    private function generarExcel($dni = null, $search = null, $idProceso = null, $cmp = null)
     {
         try {
-            // Construir la consulta base
+            $proceso = null;
+            $idProceso = (isset($idProceso) && $idProceso !== '' && ctype_digit((string) $idProceso)) ? (int) $idProceso : null;
+            // Solo filtrar por proceso en exportación grupal; en individual ($dni) no filtrar para que siempre haya registro
+            if ($idProceso !== null && $dni === null) {
+                try {
+                    $proceso = DB::connection('sqlsrv')->table('procesos')->where('id_proceso', $idProceso)->first();
+                } catch (\Throwable $e) {
+                    $proceso = null;
+                }
+            }
+
+            // Lista de procesos para calcular CORTE por fila (probar sqlsrv y luego conexión por defecto)
+            $procesosList = collect([]);
+            try {
+                $procesosList = DB::connection('sqlsrv')->table('procesos')->where('activo', 1)->orderBy('fecha_inicio')->get();
+                if ($procesosList->isEmpty()) {
+                    $procesosList = DB::table('procesos')->where('activo', 1)->orderBy('fecha_inicio')->get();
+                }
+            } catch (\Throwable $e) {
+                try {
+                    $procesosList = DB::table('procesos')->where('activo', 1)->orderBy('fecha_inicio')->get();
+                } catch (\Throwable $e2) {
+                    // ignorar
+                }
+            }
+            $procesosList = collect($procesosList ?? []);
+
+            // Misma base que el grid: usuarios con evaluaciones + LEFT JOIN serumista (para que grid y Excel listen los mismos registros)
             $sql = "
                 SELECT
-                    ROW_NUMBER() OVER (ORDER BY s.[APELLIDOS Y NOMBRES]) AS contador,
-                    s.[APELLIDOS Y NOMBRES] AS nombre_completo,
+                    ROW_NUMBER() OVER (ORDER BY COALESCE(s.[APELLIDOS Y NOMBRES], u.nombre_completo)) AS contador,
+                    COALESCE(s.[APELLIDOS Y NOMBRES], u.nombre_completo) AS nombre_completo,
                     '' AS edad,
                     '' AS grupo_etareo,
                     u.sexo AS sexo,
-                    s.NumeroDocumento AS dni,
-                    s.CMP AS cmp,
+                    COALESCE(s.NumeroDocumento, u.nombre_usuario) AS dni,
+                    COALESCE(s.CMP, u.cmp) AS cmp,
                     u.telefono AS celular,
                     s.Email AS correo,
                     s.MODALIDAD AS modalidad,
@@ -397,40 +486,36 @@ class ResultadoTamizajeController extends Controller
                     s.[ZAF (*)] AS zaf,
                     s.[ZE (**)] AS ze,
 
-                    -- ASQ
                     asq.resultado AS asq_resultado,
                     asq.fecha_registro AS asq_fecha,
                     asq.pregunta1, asq.pregunta2, asq.pregunta3, asq.pregunta4, asq.pregunta5,
 
-                    -- PHQ
                     phq.riesgo AS phq_riesgo,
                     phq.puntaje AS phq_puntaje,
                     phq.fecha AS phq_fecha,
 
-                    -- GAD
                     gad.riesgo AS gad_riesgo,
                     gad.puntaje AS gad_puntaje,
                     gad.fecha AS gad_fecha,
 
-                    -- AUDIT
                     audit.riesgo AS audit_riesgo,
                     audit.puntaje AS audit_puntaje,
                     audit.fecha AS audit_fecha,
 
-                    -- MBI
-                    mbi.riesgoCE AS mbi_riesgo, -- Solo CE para la columna Burnout
+                    mbi.riesgoCE AS mbi_riesgo,
                     mbi.riesgoDP,
                     mbi.riesgoRP,
                     mbi.puntajeCE AS mbi_puntaje,
                     mbi.fecha AS mbi_fecha
 
-                FROM serumista_remunerados s
-                LEFT JOIN usuarios u ON s.CMP = u.cmp AND u.estado = 1
+                FROM usuarios u
+                LEFT JOIN serumista_remunerados s ON u.cmp = s.CMP
 
                 OUTER APPLY (
                     SELECT TOP 1 resultado, fecha_registro, pregunta1, pregunta2, pregunta3, pregunta4, pregunta5
                     FROM asq5_responses
                     WHERE user_id = u.id
+                    " . ($proceso ? " AND (CAST(fecha_registro AS DATE) >= ? AND CAST(fecha_registro AS DATE) <= ?)" : "") . "
                     ORDER BY id DESC
                 ) asq
 
@@ -438,6 +523,7 @@ class ResultadoTamizajeController extends Controller
                     SELECT TOP 1 riesgo, puntaje, fecha
                     FROM phq9_responses
                     WHERE user_id = u.id
+                    " . ($proceso ? " AND (CAST(fecha AS DATE) >= ? AND CAST(fecha AS DATE) <= ?)" : "") . "
                     ORDER BY id_encuesta DESC
                 ) phq
 
@@ -445,6 +531,7 @@ class ResultadoTamizajeController extends Controller
                     SELECT TOP 1 riesgo, puntaje, fecha
                     FROM gad_responses
                     WHERE user_id = u.id
+                    " . ($proceso ? " AND (CAST(fecha AS DATE) >= ? AND CAST(fecha AS DATE) <= ?)" : "") . "
                     ORDER BY id_encuesta DESC
                 ) gad
 
@@ -452,6 +539,7 @@ class ResultadoTamizajeController extends Controller
                     SELECT TOP 1 riesgoCE, riesgoDP, riesgoRP, puntajeCE, fecha
                     FROM mbi_responses
                     WHERE user_id = u.id
+                    " . ($proceso ? " AND (CAST(fecha AS DATE) >= ? AND CAST(fecha AS DATE) <= ?)" : "") . "
                     ORDER BY id_encuesta DESC
                 ) mbi
 
@@ -459,29 +547,44 @@ class ResultadoTamizajeController extends Controller
                     SELECT TOP 1 riesgo, puntaje, fecha
                     FROM audit_responses
                     WHERE user_id = u.id
+                    " . ($proceso ? " AND (CAST(fecha AS DATE) >= ? AND CAST(fecha AS DATE) <= ?)" : "") . "
                     ORDER BY id_encuesta DESC
                 ) audit
 
-                WHERE 1=1
+                WHERE u.estado = 1
+                AND (asq.resultado IS NOT NULL OR phq.riesgo IS NOT NULL OR gad.riesgo IS NOT NULL OR mbi.riesgoCE IS NOT NULL OR audit.riesgo IS NOT NULL)
             ";
 
             $params = [];
 
+            if ($proceso) {
+                for ($i = 0; $i < 5; $i++) {
+                    $params[] = $proceso->fecha_inicio;
+                    $params[] = $proceso->fecha_fin;
+                }
+            }
+
             if ($dni) {
-                $sql .= " AND (s.NumeroDocumento = ? OR s.CMP = ?)";
+                $sql .= " AND (u.nombre_usuario = ? OR u.cmp = ? OR s.NumeroDocumento = ? OR s.CMP = ?)";
                 $params[] = $dni;
                 $params[] = $dni;
+                $params[] = $dni;
+                $params[] = ($cmp !== null && $cmp !== '') ? $cmp : $dni;
             }
 
             if ($search) {
-                $sql .= " AND (s.[APELLIDOS Y NOMBRES] LIKE ? OR s.CMP LIKE ? OR s.NumeroDocumento LIKE ?)";
+                $sql .= " AND (COALESCE(s.[APELLIDOS Y NOMBRES], u.nombre_completo) LIKE ? OR COALESCE(s.CMP, u.cmp) LIKE ? OR COALESCE(s.NumeroDocumento, u.nombre_usuario) LIKE ?)";
                 $searchParam = "%{$search}%";
                 $params[] = $searchParam;
                 $params[] = $searchParam;
                 $params[] = $searchParam;
             }
 
-            $sql .= " ORDER BY s.[APELLIDOS Y NOMBRES]";
+            if ($proceso) {
+                $sql .= " AND (asq.fecha_registro IS NOT NULL OR phq.fecha IS NOT NULL OR gad.fecha IS NOT NULL OR mbi.fecha IS NOT NULL OR audit.fecha IS NOT NULL)";
+            }
+
+            $sql .= " ORDER BY COALESCE(s.[APELLIDOS Y NOMBRES], u.nombre_completo)";
 
             $resultados = DB::connection('sqlsrv')->select($sql, $params);
 
@@ -492,6 +595,7 @@ class ResultadoTamizajeController extends Controller
             // Cabeceras
             $cabeceras = [
                 'contador' => 'N°',
+                'corte' => 'CORTE',
                 'nombre_completo' => 'NOMBRE COMPLETO',
                 'edad' => 'EDAD',
                 'grupo_etareo' => 'GRUPO ETAREO',
@@ -592,9 +696,30 @@ class ResultadoTamizajeController extends Controller
                 $informeAudit = $this->generarInforme('audit', $r);
                 $informeMbi = $this->generarInforme('mbi', $r);
 
+                // CORTE por fila: si hay filtro por proceso usarlo; si no, calcular por la fecha más reciente de evaluaciones
+                $corteFila = ($proceso && !empty($proceso->etiqueta)) ? $proceso->etiqueta : 'Todos los cortes';
+                if (empty($proceso) && $procesosList->isNotEmpty()) {
+                    $fechas = array_filter([$r->asq_fecha ?? null, $r->phq_fecha ?? null, $r->gad_fecha ?? null, $r->mbi_fecha ?? null, $r->audit_fecha ?? null]);
+                    $fechaMax = $fechas ? max($fechas) : null;
+                    if ($fechaMax) {
+                        $f = $fechaMax instanceof \DateTimeInterface ? $fechaMax->format('Y-m-d') : substr((string) $fechaMax, 0, 10);
+                        foreach ($procesosList as $p) {
+                            if (!empty($p->fecha_inicio) && !empty($p->fecha_fin) && !empty($p->etiqueta)) {
+                                $inicio = $p->fecha_inicio instanceof \DateTimeInterface ? $p->fecha_inicio->format('Y-m-d') : substr((string) $p->fecha_inicio, 0, 10);
+                                $fin = $p->fecha_fin instanceof \DateTimeInterface ? $p->fecha_fin->format('Y-m-d') : substr((string) $p->fecha_fin, 0, 10);
+                                if ($f >= $inicio && $f <= $fin) {
+                                    $corteFila = $p->etiqueta;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Mapeo de datos a columnas
                 $dataRow = [
                     'contador' => $r->contador,
+                    'corte' => $corteFila,
                     'nombre_completo' => $r->nombre_completo,
                     'edad' => $r->edad,
                     'grupo_etareo' => $r->grupo_etareo,
@@ -737,7 +862,8 @@ class ResultadoTamizajeController extends Controller
             // Filtros
             $sheet->setAutoFilter("A1:{$lastColumn}1");
 
-            $filename = $dni ? "Resultados_Evaluacion_{$dni}.xlsx" : "Resultados_Evaluaciones_Todos.xlsx";
+            $corteSuffix = ($proceso && !empty($proceso->etiqueta)) ? '_' . preg_replace('/[^a-z0-9\-]/i', '_', $proceso->etiqueta) : '';
+            $filename = $dni ? "Resultados_Evaluacion_{$dni}{$corteSuffix}.xlsx" : "Resultados_Evaluaciones_Todos{$corteSuffix}.xlsx";
 
             // Stream download
             $writer = new Xlsx($spreadsheet);
