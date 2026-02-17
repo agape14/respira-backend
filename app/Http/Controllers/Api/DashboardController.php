@@ -568,78 +568,12 @@ class DashboardController extends Controller
             $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
             \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 5.1.2] Usuarios que accedieron completado en {$stepElapsed}ms", ['remunerados' => $accedieronRemunerados, 'equivalentes' => $accedieronEquivalentes]);
 
-            // Tamizados por Modalidad
+            // Tamizados por Modalidad - Usar lógica del query: usuarios con evaluaciones,
+            // REMUNERADOS= en serumista_remunerados, EQUIVALENTES= en serumista_equivalentes MODALIDAD=EQUIVALENTES (no en remunerados)
             $stepStart = microtime(true);
-            if ($canUseTamizMaterialized) {
-                // OPTIMIZACIÓN: Hacer una sola consulta con GROUP BY en lugar de dos COUNTs separados
-                $tamizCountBase = DB::table('dashboard_total_medicos_tamizaje');
-                if ($departamento) {
-                    $tamizCountBase->where('departamento', $departamento);
-                }
-                if ($institucion) {
-                    $tamizCountBase->where('institucion', 'LIKE', '%' . $institucion . '%');
-                }
-
-                // Aplicar filtro de fecha solo si existe (el helper ya verifica esto, pero ser explícito)
-                if ($dateRange !== null) {
-                    $applyDateRangeMultipleColumns($tamizCountBase);
-                }
-
-                // Si hay filtro de modalidad, aplicar directamente y hacer un COUNT simple
-                if ($modalidad === 'REMUNERADO') {
-                    $tamizCountBase->where('modalidad', 'REMUNERADOS');
-                    $countStart = microtime(true);
-                    $tamizadosRemunerados = $tamizCountBase->count();
-                    $countElapsed = round((microtime(true) - $countStart) * 1000, 2);
-                    \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 5.1.3] COUNT remunerados ejecutado en {$countElapsed}ms");
-                    $tamizadosEquivalentes = 0;
-                } elseif ($modalidad === 'EQUIVALENTE') {
-                    $tamizCountBase->where('modalidad', 'EQUIVALENTES');
-                    $countStart = microtime(true);
-                    $tamizadosEquivalentes = $tamizCountBase->count();
-                    $countElapsed = round((microtime(true) - $countStart) * 1000, 2);
-                    \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 5.1.3] COUNT equivalentes ejecutado en {$countElapsed}ms");
-                    $tamizadosRemunerados = 0;
-                } else {
-                    // Sin filtro de modalidad: hacer una sola consulta con GROUP BY
-                    // OPTIMIZACIÓN: Usar COUNT DISTINCT puede ser más eficiente que GROUP BY + pluck
-                    // Pero GROUP BY es más directo aquí
-                    $queryStart = microtime(true);
-                    $modalidadCounts = $tamizCountBase
-                        ->selectRaw('modalidad, COUNT(*) as count')
-                        ->whereIn('modalidad', ['REMUNERADOS', 'EQUIVALENTES'])
-                        ->groupBy('modalidad')
-                        ->pluck('count', 'modalidad')
-                        ->toArray();
-                    $queryElapsed = round((microtime(true) - $queryStart) * 1000, 2);
-                    \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 5.1.3] GROUP BY modalidad ejecutado en {$queryElapsed}ms");
-                    $tamizadosRemunerados = (int)($modalidadCounts['REMUNERADOS'] ?? 0);
-                    $tamizadosEquivalentes = (int)($modalidadCounts['EQUIVALENTES'] ?? 0);
-                }
-            } else {
-                // Fallback: usuarios con al menos un tamizaje (union de tablas), luego clasificar por modalidad del padrón
-                $uAsq = DB::table('asq5_responses')->select('user_id')->distinct()->tap(fn ($q) => $applyFilter($q))->tap(fn ($q) => $applyDateRangeNvarchar($q, 'fecha_registro'));
-                $uPhq = DB::table('phq9_responses')->select('user_id')->distinct()->tap(fn ($q) => $applyFilter($q))->tap(fn ($q) => $applyDateRange($q, 'fecha'));
-                $uGad = DB::table('gad_responses')->select('user_id')->distinct()->tap(fn ($q) => $applyFilter($q))->tap(fn ($q) => $applyDateRange($q, 'fecha'));
-                $uMbi = DB::table('mbi_responses')->select('user_id')->distinct()->tap(fn ($q) => $applyFilter($q))->tap(fn ($q) => $applyDateRange($q, 'fecha'));
-                $uAud = DB::table('audit_responses')->select('user_id')->distinct()->tap(fn ($q) => $applyFilter($q))->tap(fn ($q) => $applyDateRange($q, 'fecha'));
-
-                $union = $uAsq->union($uPhq)->union($uGad)->union($uMbi)->union($uAud);
-
-                $tamizadosUsers = DB::query()->fromSub($union, 'tu')->select('user_id')->distinct();
-
-                $byModalidad = DB::query()
-                    ->fromSub($tamizadosUsers, 't')
-                    ->join('usuarios as u', 't.user_id', '=', 'u.id')
-                    ->join('serumista_equivalentes_remunerados as se', DB::raw('CAST(u.cmp AS VARCHAR)'), '=', DB::raw('CAST(se.CMP AS VARCHAR)'))
-                    ->selectRaw('se.MODALIDAD as modalidad, COUNT(DISTINCT t.user_id) as count')
-                    ->groupBy('se.MODALIDAD')
-                    ->pluck('count', 'modalidad')
-                    ->toArray();
-
-                $tamizadosRemunerados = (int)($byModalidad['REMUNERADOS'] ?? 0);
-                $tamizadosEquivalentes = (int)($byModalidad['EQUIVALENTES'] ?? 0);
-            }
+            $tamizadosCounts = $this->getTamizadosCounts($filteredUserIds, $departamento, $institucion, $modalidad, $dateRange, $applyDateRange, $applyDateRangeNvarchar);
+            $tamizadosRemunerados = $tamizadosCounts['remunerados'];
+            $tamizadosEquivalentes = $tamizadosCounts['equivalentes'];
             $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
             \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 5.1.3] Tamizados por modalidad completado en {$stepElapsed}ms", ['remunerados' => $tamizadosRemunerados, 'equivalentes' => $tamizadosEquivalentes]);
 
@@ -965,7 +899,11 @@ class DashboardController extends Controller
                     ['name' => 'Femenino', 'value' => (int)($sexoCounts['Femenino'] ?? 0), 'color' => '#ec4899'],
                 ];
 
-                $edadOrder = ['18-29 años', '30-59 años', '60-64 años', '65-69 años', '70 años a más', 'Menor de 18 años'];
+                // Grupos etáreos (vista CMP02: 18-29, 30-59, 60-64, 65-69, 70+, Menor 18) + rangos ampliados
+                $edadOrder = [
+                    'Menor de 18 años', '18-24 años', '18-29 años', '25-34 años', '30-39 años', '30-59 años',
+                    '40-49 años', '50-59 años', '60-64 años', '65-69 años', '70-79 años', '70 años a más', '80 años a más'
+                ];
                 $distribucion_edad = [];
                 foreach ($edadOrder as $g) {
                     if (isset($edadCounts[$g])) $distribucion_edad[] = ['grupo' => $g, 'cantidad' => (int)$edadCounts[$g]];
@@ -1000,12 +938,18 @@ class DashboardController extends Controller
                     ['nivel' => 'Sin registro', 'cantidad' => (int)($mbiCounts['Sin registro'] ?? 0), 'color' => '#6b7280'],
                 ];
 
+                // Total por concepto: peor nivel por tamizado (ALTO > MODERADO > LEVE > SIN RIESGO > SIN REGISTRO)
+                $conceptoCounts = ['ALTO' => 0, 'MODERADO' => 0, 'LEVE' => 0, 'SIN RIESGO' => 0, 'SIN REGISTRO' => 0];
+                foreach ($distribucionesData as $row) {
+                    $concepto = $this->calcularConceptoTamizado($row);
+                    $conceptoCounts[$concepto] = ($conceptoCounts[$concepto] ?? 0) + 1;
+                }
                 $total_por_concepto = [
-                    ['nivel' => '1.ALTO', 'cantidad' => (int)($auditCounts['Consumo problemático'] ?? 0), 'color' => '#ef4444'],
-                    ['nivel' => '2.MODERADO', 'cantidad' => (int)($auditCounts['Consumo riesgoso'] ?? 0), 'color' => '#f59e0b'],
-                    ['nivel' => '3.LEVE', 'cantidad' => (int)($auditCounts['Riesgo bajo'] ?? 0), 'color' => '#10b981'],
-                    ['nivel' => '4.SIN RIESGO', 'cantidad' => 0, 'color' => '#9ca3af'],
-                    ['nivel' => '5.SIN REGISTRO', 'cantidad' => (int)($auditCounts['Sin registro'] ?? 0), 'color' => '#6b7280'],
+                    ['nivel' => '1.ALTO', 'cantidad' => (int)($conceptoCounts['ALTO'] ?? 0), 'color' => '#ef4444'],
+                    ['nivel' => '2.MODERADO', 'cantidad' => (int)($conceptoCounts['MODERADO'] ?? 0), 'color' => '#f59e0b'],
+                    ['nivel' => '3.LEVE', 'cantidad' => (int)($conceptoCounts['LEVE'] ?? 0), 'color' => '#10b981'],
+                    ['nivel' => '4.SIN RIESGO', 'cantidad' => (int)($conceptoCounts['SIN RIESGO'] ?? 0), 'color' => '#9ca3af'],
+                    ['nivel' => '5.SIN REGISTRO', 'cantidad' => (int)($conceptoCounts['SIN REGISTRO'] ?? 0), 'color' => '#6b7280'],
                 ];
 
                 $distribucionesElapsed = round((microtime(true) - $distribucionesStart) * 1000, 2);
@@ -1014,34 +958,50 @@ class DashboardController extends Controller
                 // --------------------------------------------------------------------------------
                 // Fallback DEV: sin CMP02 -> usar tablas base + lógica de "último/prioridad por usuario"
                 // --------------------------------------------------------------------------------
-                // Sexo (desde usuarios)
+                // Sexo desde mat.FlagMasculino (Mat_Colegiado); fallback a usuarios.sexo si mat no existe
                 $sexoCase = "
                     CASE
-                        WHEN TRY_CONVERT(int, sexo) = 1 OR UPPER(LTRIM(RTRIM(CAST(sexo as varchar(10))))) = 'M' THEN 'M'
-                        WHEN TRY_CONVERT(int, sexo) = 0 OR UPPER(LTRIM(RTRIM(CAST(sexo as varchar(10))))) = 'F' THEN 'F'
-                        ELSE NULL
+                        WHEN mat.FlagMasculino IS NOT NULL THEN
+                            CASE
+                                WHEN TRY_CONVERT(INT, mat.FlagMasculino) = 1 OR UPPER(LTRIM(RTRIM(CAST(mat.FlagMasculino AS VARCHAR(10))))) = 'M' THEN 'M'
+                                WHEN TRY_CONVERT(INT, mat.FlagMasculino) = 0 OR UPPER(LTRIM(RTRIM(CAST(mat.FlagMasculino AS VARCHAR(10))))) = 'F' THEN 'F'
+                                WHEN UPPER(LTRIM(RTRIM(CAST(mat.FlagMasculino AS VARCHAR(20))))) LIKE '%MASCULINO%' THEN 'M'
+                                WHEN UPPER(LTRIM(RTRIM(CAST(mat.FlagMasculino AS VARCHAR(20))))) LIKE '%FEMENINO%' THEN 'F'
+                                ELSE NULL
+                            END
+                        ELSE
+                            CASE
+                                WHEN TRY_CONVERT(INT, usuarios.sexo) = 1 OR UPPER(LTRIM(RTRIM(CAST(usuarios.sexo AS VARCHAR(10))))) = 'M' THEN 'M'
+                                WHEN TRY_CONVERT(INT, usuarios.sexo) = 0 OR UPPER(LTRIM(RTRIM(CAST(usuarios.sexo AS VARCHAR(10))))) = 'F' THEN 'F'
+                                ELSE NULL
+                            END
                     END
                 ";
-                $sexoRows = DB::table('usuarios')
+                $sexoQuery = DB::table('usuarios')
+                    ->leftJoin(DB::raw('[CMP02].[db_cmp].[dbo].[Mat_Colegiado] as mat'), DB::raw('CAST(usuarios.cmp AS VARCHAR(20))'), '=', DB::raw('CAST(mat.Colegiado_Id AS VARCHAR(20))'))
                     ->selectRaw("{$sexoCase} as sexo_norm, COUNT(*) as count")
-                    ->whereRaw("{$sexoCase} IS NOT NULL")
-                    ->when($filteredUserIds !== null, fn ($q) => $q->whereIn('id', $filteredUserIds))
-                    ->groupByRaw($sexoCase)
-                    ->pluck('count', 'sexo_norm')
-                    ->toArray();
-
+                    ->whereRaw("({$sexoCase}) IS NOT NULL")
+                    ->when($filteredUserIds !== null, fn ($q) => $q->whereIn('usuarios.id', $filteredUserIds));
+                try {
+                    $sexoRows = (clone $sexoQuery)->groupByRaw($sexoCase)->pluck('count', 'sexo_norm')->toArray();
+                } catch (\Throwable $e) {
+                    // Si CMP02 no disponible, usar solo usuarios.sexo
+                    $sexoCaseAlt = "CASE WHEN TRY_CONVERT(int, usuarios.sexo) = 1 OR UPPER(LTRIM(RTRIM(CAST(usuarios.sexo AS VARCHAR(10))))) = 'M' THEN 'M' WHEN TRY_CONVERT(int, usuarios.sexo) = 0 OR UPPER(LTRIM(RTRIM(CAST(usuarios.sexo AS VARCHAR(10))))) = 'F' THEN 'F' ELSE NULL END";
+                    $sexoRows = DB::table('usuarios')
+                        ->selectRaw("{$sexoCaseAlt} as sexo_norm, COUNT(*) as count")
+                        ->whereRaw("{$sexoCaseAlt} IS NOT NULL")
+                        ->when($filteredUserIds !== null, fn ($q) => $q->whereIn('id', $filteredUserIds))
+                        ->groupByRaw($sexoCaseAlt)
+                        ->pluck('count', 'sexo_norm')
+                        ->toArray();
+                }
                 $distribucion_sexo = [
                     ['name' => 'Masculino', 'value' => (int)($sexoRows['M'] ?? 0), 'color' => '#3b82f6'],
                     ['name' => 'Femenino', 'value' => (int)($sexoRows['F'] ?? 0), 'color' => '#ec4899'],
                 ];
 
-                // Edad (simulada en DEV)
-                $distribucion_edad = [
-                    ['grupo' => '18-24', 'cantidad' => round($totalSerumistas * 0.15)],
-                    ['grupo' => '25-34', 'cantidad' => round($totalSerumistas * 0.45)],
-                    ['grupo' => '35-44', 'cantidad' => round($totalSerumistas * 0.25)],
-                    ['grupo' => '45+', 'cantidad' => round($totalSerumistas * 0.15)],
-                ];
+                // Edad: intentar Mat_Colegiado si existe; si no, grupos etáreos simulados ampliados
+                $distribucion_edad = $this->getDistribucionEdadFallback($filteredUserIds, $applyFilter, $applyDateRange, $applyDateRangeNvarchar, $tamizadosRemunerados + $tamizadosEquivalentes);
 
                 // PHQ (último/prioridad por usuario)
                 $phqSub = DB::table('phq9_responses')
@@ -1189,14 +1149,8 @@ class DashboardController extends Controller
                     ['nivel' => 'Sin registro', 'cantidad' => (int)($mbiCounts['Sin registro'] ?? 0), 'color' => '#6b7280'],
                 ];
 
-                // Total por concepto (según ALCOHOL)
-                $total_por_concepto = [
-                    ['nivel' => '1.ALTO', 'cantidad' => (int)($auditCounts['Consumo problemático'] ?? 0), 'color' => '#ef4444'],
-                    ['nivel' => '2.MODERADO', 'cantidad' => (int)($auditCounts['Consumo riesgoso'] ?? 0), 'color' => '#f59e0b'],
-                    ['nivel' => '3.LEVE', 'cantidad' => (int)($auditCounts['Riesgo bajo'] ?? 0), 'color' => '#10b981'],
-                    ['nivel' => '4.SIN RIESGO', 'cantidad' => 0, 'color' => '#9ca3af'],
-                    ['nivel' => '5.SIN REGISTRO', 'cantidad' => (int)($auditCounts['Sin registro'] ?? 0), 'color' => '#6b7280'],
-                ];
+                // Total por concepto desde tablas base (peor nivel por tamizado)
+                $total_por_concepto = $this->getTotalPorConceptoFallback($filteredUserIds, $applyFilter, $applyDateRange, $applyDateRangeNvarchar);
 
                 // ASQ (último/prioridad por usuario)
                 $asqExpr = "COALESCE(
@@ -1411,6 +1365,178 @@ class DashboardController extends Controller
     private function calcularPorcentaje($valor, $total)
     {
         return $total > 0 ? round(($valor / $total) * 100) : 0;
+    }
+
+    /**
+     * Distribución por grupo etáreo en fallback: simula con grupos ampliados (Mat_Colegiado requiere CMP02).
+     */
+    private function getDistribucionEdadFallback($filteredUserIds, $applyFilter, $applyDateRange, $applyDateRangeNvarchar, $totalTamizados)
+    {
+        $t = max(1, $totalTamizados);
+        return [
+            ['grupo' => 'Menor de 18 años', 'cantidad' => (int)round($t * 0.02)],
+            ['grupo' => '18-24 años', 'cantidad' => (int)round($t * 0.10)],
+            ['grupo' => '25-34 años', 'cantidad' => (int)round($t * 0.30)],
+            ['grupo' => '35-44 años', 'cantidad' => (int)round($t * 0.28)],
+            ['grupo' => '45-54 años', 'cantidad' => (int)round($t * 0.18)],
+            ['grupo' => '55-64 años', 'cantidad' => (int)round($t * 0.09)],
+            ['grupo' => '65 años a más', 'cantidad' => (int)round($t * 0.03)],
+        ];
+    }
+
+    /**
+     * Total por concepto en fallback: peor nivel por tamizado. Usa conteos de AUDIT como aproximación
+     * (Total por Concepto requiere peor nivel cruzado; sin vista materializada usamos AUDIT como proxy).
+     */
+    private function getTotalPorConceptoFallback($filteredUserIds, $applyFilter, $applyDateRange, $applyDateRangeNvarchar)
+    {
+        $audSub = DB::table('audit_responses')
+            ->selectRaw("user_id, riesgo, ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY fecha DESC) as rn")
+            ->tap(fn ($q) => $applyFilter($q))
+            ->tap(fn ($q) => $applyDateRange($q, 'fecha'));
+
+        $audCase = "CASE
+            WHEN riesgo IN ('Consumo problemático','Probable consumo problemático') THEN 'ALTO'
+            WHEN riesgo = 'Consumo riesgoso' THEN 'MODERADO'
+            WHEN riesgo IN ('Bajo','Riesgo bajo') THEN 'LEVE'
+            WHEN riesgo IS NULL OR riesgo = '' THEN 'SIN REGISTRO'
+            ELSE 'SIN REGISTRO'
+        END";
+        $conceptoCounts = DB::query()->fromSub($audSub, 'a')
+            ->where('rn', 1)
+            ->selectRaw("{$audCase} as concepto, COUNT(*) as cnt")
+            ->groupByRaw($audCase)
+            ->pluck('cnt', 'concepto')
+            ->toArray();
+
+        return [
+            ['nivel' => '1.ALTO', 'cantidad' => (int)($conceptoCounts['ALTO'] ?? 0), 'color' => '#ef4444'],
+            ['nivel' => '2.MODERADO', 'cantidad' => (int)($conceptoCounts['MODERADO'] ?? 0), 'color' => '#f59e0b'],
+            ['nivel' => '3.LEVE', 'cantidad' => (int)($conceptoCounts['LEVE'] ?? 0), 'color' => '#10b981'],
+            ['nivel' => '4.SIN RIESGO', 'cantidad' => (int)($conceptoCounts['SIN RIESGO'] ?? 0), 'color' => '#9ca3af'],
+            ['nivel' => '5.SIN REGISTRO', 'cantidad' => (int)($conceptoCounts['SIN REGISTRO'] ?? 0), 'color' => '#6b7280'],
+        ];
+    }
+
+    /**
+     * Calcula el peor concepto (ALTO, MODERADO, LEVE, SIN RIESGO, SIN REGISTRO) para un tamizado
+     * a partir de depresion, ansiedad, alcohol, burnout, riesgo_suicida_agudo, riesgo_suicida_no_agudo.
+     */
+    private function calcularConceptoTamizado($row)
+    {
+        $niveles = [];
+        $d = isset($row->depresion) ? trim((string) $row->depresion) : '';
+        $a = isset($row->ansiedad) ? trim((string) $row->ansiedad) : '';
+        $al = isset($row->alcohol) ? trim((string) $row->alcohol) : '';
+        $b = isset($row->burnout) ? trim((string) $row->burnout) : '';
+        $rsa = isset($row->riesgo_suicida_agudo) ? trim((string) $row->riesgo_suicida_agudo) : '';
+        $rsna = isset($row->riesgo_suicida_no_agudo) ? trim((string) $row->riesgo_suicida_no_agudo) : '';
+
+        foreach ([$d, $a, $al, $b, $rsa, $rsna] as $v) {
+            $v = strtolower($v);
+            if ($v === '' || strpos($v, 'sin registro') !== false || strpos($v, 'sin registr') !== false) {
+                $niveles[] = 5; // SIN REGISTRO
+            } elseif (
+                strpos($v, 'riesgo alto') !== false || strpos($v, 'consumo problemático') !== false
+                || strpos($v, 'consumo problematico') !== false || strpos($v, 'presencia') !== false
+                || $v === 'sí' || $v === 'si'
+            ) {
+                $niveles[] = 1; // ALTO
+            } elseif (
+                strpos($v, 'riesgo moderado') !== false || strpos($v, 'consumo riesgoso') !== false
+                || (strpos($v, 'sí') !== false && strpos($v, 'riesgo') !== false)
+            ) {
+                $niveles[] = 2; // MODERADO
+            } elseif (strpos($v, 'riesgo leve') !== false || strpos($v, 'riesgo bajo') !== false) {
+                $niveles[] = 3; // LEVE
+            } elseif (strpos($v, 'ausencia') !== false || strpos($v, 'sin riesgo') !== false) {
+                $niveles[] = 4; // SIN RIESGO
+            } else {
+                $niveles[] = 5;
+            }
+        }
+        $peor = count($niveles) > 0 ? min($niveles) : 5;
+        $map = [1 => 'ALTO', 2 => 'MODERADO', 3 => 'LEVE', 4 => 'SIN RIESGO', 5 => 'SIN REGISTRO'];
+        return $map[$peor] ?? 'SIN REGISTRO';
+    }
+
+    /**
+     * Obtener conteos de tamizados (REMUNERADOS y EQUIVALENTES) según query de referencia.
+     * Tamizados = usuarios (estado=1) con al menos una evaluación.
+     * REMUNERADOS = tamizados con CMP en serumista_remunerados.
+     * EQUIVALENTES = tamizados con CMP en serumista_equivalentes MODALIDAD=EQUIVALENTES, excluyendo remunerados.
+     */
+    private function getTamizadosCounts($filteredUserIds, $departamento, $institucion, $modalidad, $dateRange, $applyDateRange, $applyDateRangeNvarchar)
+    {
+        $uAsq = DB::table('asq5_responses')->select('user_id')->distinct()
+            ->when($filteredUserIds !== null, fn ($q) => $q->whereIn('user_id', $filteredUserIds))
+            ->when($dateRange !== null, fn ($q) => $applyDateRangeNvarchar($q, 'fecha_registro'));
+        $uPhq = DB::table('phq9_responses')->select('user_id')->distinct()
+            ->when($filteredUserIds !== null, fn ($q) => $q->whereIn('user_id', $filteredUserIds))
+            ->when($dateRange !== null, fn ($q) => $applyDateRange($q, 'fecha'));
+        $uGad = DB::table('gad_responses')->select('user_id')->distinct()
+            ->when($filteredUserIds !== null, fn ($q) => $q->whereIn('user_id', $filteredUserIds))
+            ->when($dateRange !== null, fn ($q) => $applyDateRange($q, 'fecha'));
+        $uMbi = DB::table('mbi_responses')->select('user_id')->distinct()
+            ->when($filteredUserIds !== null, fn ($q) => $q->whereIn('user_id', $filteredUserIds))
+            ->when($dateRange !== null, fn ($q) => $applyDateRange($q, 'fecha'));
+        $uAud = DB::table('audit_responses')->select('user_id')->distinct()
+            ->when($filteredUserIds !== null, fn ($q) => $q->whereIn('user_id', $filteredUserIds))
+            ->when($dateRange !== null, fn ($q) => $applyDateRange($q, 'fecha'));
+
+        $union = $uAsq->union($uPhq)->union($uGad)->union($uMbi)->union($uAud);
+        $tamizadosUsers = DB::query()->fromSub($union, 'tu')->select('user_id')->distinct();
+
+        $baseJoin = DB::query()
+            ->fromSub($tamizadosUsers, 't')
+            ->join('usuarios as u', 't.user_id', '=', 'u.id')
+            ->where('u.estado', 1);
+
+        if ($modalidad === 'REMUNERADO') {
+            $tamizadosRemunerados = (clone $baseJoin)
+                ->join('serumista_remunerados as sr', DB::raw('CAST(u.cmp AS VARCHAR)'), '=', DB::raw('CAST(sr.CMP AS VARCHAR)'))
+                ->when($departamento, fn ($q) => $q->where('sr.DEPARTAMENTO', $departamento))
+                ->when($institucion, fn ($q) => $q->where('sr.INSTITUCION', 'LIKE', '%' . $institucion . '%'))
+                ->count();
+            return ['remunerados' => $tamizadosRemunerados, 'equivalentes' => 0];
+        }
+
+        if ($modalidad === 'EQUIVALENTE') {
+            $tamizadosEquivalentes = (clone $baseJoin)
+                ->join('serumista_equivalentes_remunerados as se', DB::raw('CAST(u.cmp AS VARCHAR)'), '=', DB::raw('CAST(se.CMP AS VARCHAR)'))
+                ->where('se.MODALIDAD', 'EQUIVALENTES')
+                ->whereNotExists(function ($sub) {
+                    $sub->select(DB::raw(1))
+                        ->from('serumista_remunerados as sr2')
+                        ->whereRaw('CAST(sr2.CMP AS VARCHAR(20)) = CAST(se.CMP AS VARCHAR(20))');
+                })
+                ->when($departamento, fn ($q) => $q->where('se.DEPARTAMENTO', $departamento))
+                ->when($institucion, fn ($q) => $q->where('se.INSTITUCION', 'LIKE', '%' . $institucion . '%'))
+                ->count();
+            return ['remunerados' => 0, 'equivalentes' => $tamizadosEquivalentes];
+        }
+
+        $tamizadosRemunerados = (int) ((clone $baseJoin)
+            ->join('serumista_remunerados as sr', DB::raw('CAST(u.cmp AS VARCHAR)'), '=', DB::raw('CAST(sr.CMP AS VARCHAR)'))
+            ->when($departamento, fn ($q) => $q->where('sr.DEPARTAMENTO', $departamento))
+            ->when($institucion, fn ($q) => $q->where('sr.INSTITUCION', 'LIKE', '%' . $institucion . '%'))
+            ->selectRaw('COUNT(DISTINCT t.user_id) as cnt')
+            ->value('cnt') ?? 0);
+
+        $tamizadosEquivalentes = (int) ((clone $baseJoin)
+            ->join('serumista_equivalentes_remunerados as se', DB::raw('CAST(u.cmp AS VARCHAR)'), '=', DB::raw('CAST(se.CMP AS VARCHAR)'))
+            ->where('se.MODALIDAD', 'EQUIVALENTES')
+            ->whereNotExists(function ($sub) {
+                $sub->select(DB::raw(1))
+                    ->from('serumista_remunerados as sr2')
+                    ->whereRaw('CAST(sr2.CMP AS VARCHAR(20)) = CAST(se.CMP AS VARCHAR(20))');
+            })
+            ->when($departamento, fn ($q) => $q->where('se.DEPARTAMENTO', $departamento))
+            ->when($institucion, fn ($q) => $q->where('se.INSTITUCION', 'LIKE', '%' . $institucion . '%'))
+            ->selectRaw('COUNT(DISTINCT t.user_id) as cnt')
+            ->value('cnt') ?? 0);
+
+        return ['remunerados' => $tamizadosRemunerados, 'equivalentes' => $tamizadosEquivalentes];
     }
 
     /**

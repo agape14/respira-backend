@@ -30,6 +30,7 @@ class DerivacionController extends Controller
         $query = DB::table('usuarios')
             ->select('usuarios.*')
             ->leftJoin($tableName, 'usuarios.cmp', '=', "{$tableName}.CMP")
+            ->leftJoin(DB::raw('[CMP02].[db_cmp].[dbo].[Mat_Colegiado] as mat'), DB::raw('CAST(usuarios.cmp AS VARCHAR(20))'), '=', DB::raw('CAST(mat.Colegiado_Id AS VARCHAR(20))'))
             ->where('usuarios.estado', 1);
 
         if ($entidad === 'ESSALUD') {
@@ -61,6 +62,15 @@ class DerivacionController extends Controller
         return $query;
     }
 
+    /**
+     * Filtro para mostrar solo quienes tienen al menos "Riesgo alto" en algún examen:
+     * - PHQ: Riesgo alto
+     * - GAD: Riesgo alto
+     * - MBI: Presencia de burnout
+     * - AUDIT: Consumo problemático, Dependencia
+     * - ASQ: Riesgo suicida agudo/inminente (excluye "Riesgo suicida no agudo")
+     * - derivados: derivación manual desde atención
+     */
     private function applyHighRiskFilter($query)
     {
         return $query->where(function($q) {
@@ -80,7 +90,7 @@ class DerivacionController extends Controller
                     ->where('riesgo', 'Riesgo alto')
                     ->whereRaw('id_encuesta = (SELECT MAX(id_encuesta) FROM gad_responses r2 WHERE r2.user_id = gad_responses.user_id)');
             })
-            // MBI - Presencia de Burnout
+            // MBI - Presencia de Burnout (Riesgo alto)
             ->orWhereExists(function ($sub) {
                 $sub->select(DB::raw(1))
                     ->from('mbi_responses')
@@ -92,20 +102,20 @@ class DerivacionController extends Controller
                     })
                     ->whereRaw('id_encuesta = (SELECT MAX(id_encuesta) FROM mbi_responses r2 WHERE r2.user_id = mbi_responses.user_id)');
             })
-            // AUDIT - Consumo problemático/Dependencia/Riesgo
+            // AUDIT - Riesgo alto: Consumo problemático, Dependencia
             ->orWhereExists(function ($sub) {
                 $sub->select(DB::raw(1))
                     ->from('audit_responses')
                     ->whereColumn('audit_responses.user_id', 'usuarios.id')
-                    ->whereIn('riesgo', ['Consumo problemático', 'Dependencia', 'Riesgo'])
+                    ->whereIn('riesgo', ['Consumo problemático', 'Probable consumo problemático', 'Dependencia'])
                     ->whereRaw('id_encuesta = (SELECT MAX(id_encuesta) FROM audit_responses r2 WHERE r2.user_id = audit_responses.user_id)');
             })
-            // ASQ - Cualquier riesgo
+            // ASQ - Riesgo alto: solo Riesgo suicida agudo/inminente (excluye "Riesgo suicida no agudo")
             ->orWhereExists(function ($sub) {
                 $sub->select(DB::raw(1))
                     ->from('asq5_responses')
                     ->whereColumn('asq5_responses.user_id', 'usuarios.id')
-                    ->where('resultado', '!=', 'Sin riesgo')
+                    ->where('resultado', 'Riesgo suicida agudo/inminente')
                     ->whereRaw('id = (SELECT MAX(id) FROM asq5_responses r2 WHERE r2.user_id = asq5_responses.user_id)');
             })
             // Derivados Manualmente (desde atención) - tabla derivados
@@ -359,7 +369,13 @@ class DerivacionController extends Controller
             $query->addSelect([
                 'usuarios.id as usuario_id',
                 'usuarios.telefono',
-                'usuarios.sexo',
+                DB::raw("CASE
+                    WHEN TRY_CONVERT(INT, mat.FlagMasculino) = 1 OR UPPER(LTRIM(RTRIM(CAST(mat.FlagMasculino AS VARCHAR(10))))) = 'M' THEN 'Masculino'
+                    WHEN TRY_CONVERT(INT, mat.FlagMasculino) = 0 OR UPPER(LTRIM(RTRIM(CAST(mat.FlagMasculino AS VARCHAR(10))))) = 'F' THEN 'Femenino'
+                    WHEN UPPER(LTRIM(RTRIM(CAST(mat.FlagMasculino AS VARCHAR(20))))) LIKE '%MASCULINO%' THEN 'Masculino'
+                    WHEN UPPER(LTRIM(RTRIM(CAST(mat.FlagMasculino AS VARCHAR(20))))) LIKE '%FEMENINO%' THEN 'Femenino'
+                    ELSE NULL
+                END as sexo"),
                 DB::raw("COALESCE({$tableName}.[APELLIDOS Y NOMBRES], usuarios.nombre_completo) as nombre_completo"),
                 DB::raw("COALESCE({$tableName}.CMP, usuarios.cmp) as cmp"),
                 DB::raw("COALESCE({$tableName}.NumeroDocumento, usuarios.nombre_usuario) as dni"),

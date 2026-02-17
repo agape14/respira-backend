@@ -467,7 +467,13 @@ class ResultadoTamizajeController extends Controller
                     COALESCE(s.[APELLIDOS Y NOMBRES], u.nombre_completo) AS nombre_completo,
                     '' AS edad,
                     '' AS grupo_etareo,
-                    u.sexo AS sexo,
+                    CASE
+                        WHEN TRY_CONVERT(INT, mat.FlagMasculino) = 1 OR UPPER(LTRIM(RTRIM(CAST(mat.FlagMasculino AS VARCHAR(10))))) = 'M' THEN N'Masculino'
+                        WHEN TRY_CONVERT(INT, mat.FlagMasculino) = 0 OR UPPER(LTRIM(RTRIM(CAST(mat.FlagMasculino AS VARCHAR(10))))) = 'F' THEN N'Femenino'
+                        WHEN UPPER(LTRIM(RTRIM(CAST(mat.FlagMasculino AS VARCHAR(20))))) LIKE N'%MASCULINO%' THEN N'Masculino'
+                        WHEN UPPER(LTRIM(RTRIM(CAST(mat.FlagMasculino AS VARCHAR(20))))) LIKE N'%FEMENINO%' THEN N'Femenino'
+                        ELSE NULL
+                    END AS sexo,
                     COALESCE(s.NumeroDocumento, u.nombre_usuario) AS dni,
                     COALESCE(s.CMP, u.cmp) AS cmp,
                     u.telefono AS celular,
@@ -510,6 +516,7 @@ class ResultadoTamizajeController extends Controller
 
                 FROM usuarios u
                 LEFT JOIN serumista_remunerados s ON u.cmp = s.CMP
+                LEFT JOIN [CMP02].[db_cmp].[dbo].[Mat_Colegiado] mat ON CAST(u.cmp AS VARCHAR(20)) = CAST(mat.Colegiado_Id AS VARCHAR(20))
 
                 OUTER APPLY (
                     SELECT TOP 1 resultado, fecha_registro, pregunta1, pregunta2, pregunta3, pregunta4, pregunta5
