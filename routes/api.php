@@ -386,6 +386,7 @@ Route::middleware(['auth:sanctum'])->group(function () {
     // Dashboard
     Route::get('/dashboard-data', [DashboardController::class, 'index']);
     Route::get('/dashboard-filtros', [DashboardController::class, 'filtros']);
+    Route::get('/dashboard/tamizados-no-clasificados', [DashboardController::class, 'tamizadosNoClasificados']);
 
     // Dashboard Derivaciones (endpoints separados para carga progresiva)
     Route::get('/dashboard-derivaciones/total-casos', [DashboardDerivacionesController::class, 'totalCasosDerivados']);
