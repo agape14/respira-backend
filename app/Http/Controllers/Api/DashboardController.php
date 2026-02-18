@@ -1657,7 +1657,7 @@ class DashboardController extends Controller
         // Misma base que DerivacionController::getBaseQuery: partir desde usuarios
         $query = DB::table('usuarios')
             ->select('usuarios.id')
-            ->leftJoin($tableName, DB::raw('CAST(usuarios.cmp AS VARCHAR(20))'), '=', DB::raw("CAST({$tableName}.CMP AS VARCHAR(20))"))
+            ->leftJoin($tableName, DB::raw('CAST(usuarios.cmp AS VARCHAR)'), '=', DB::raw("CAST({$tableName}.CMP AS VARCHAR)"))
             ->where('usuarios.estado', 1);
 
         if ($entidad === 'ESSALUD') {
@@ -1666,7 +1666,7 @@ class DashboardController extends Controller
                     ->orWhereNotExists(function ($sub) {
                         $sub->select(DB::raw(1))
                             ->from('serumista_equivalentes_remunerados')
-                            ->whereColumn(DB::raw('CAST(serumista_equivalentes_remunerados.CMP AS VARCHAR(20))'), DB::raw('CAST(usuarios.cmp AS VARCHAR(20))'));
+                            ->whereRaw('CAST(serumista_equivalentes_remunerados.CMP AS VARCHAR) = CAST(usuarios.cmp AS VARCHAR)');
                     });
             });
         } elseif ($entidad === 'MINSA') {
@@ -1674,7 +1674,7 @@ class DashboardController extends Controller
                 ->whereNotExists(function ($sub) {
                     $sub->select(DB::raw(1))
                         ->from('serumista_remunerados')
-                        ->whereColumn(DB::raw('CAST(serumista_remunerados.CMP AS VARCHAR(20))'), DB::raw('CAST(usuarios.cmp AS VARCHAR(20))'));
+                        ->whereRaw('CAST(serumista_remunerados.CMP AS VARCHAR) = CAST(usuarios.cmp AS VARCHAR)');
                 });
         }
 
