@@ -1656,7 +1656,6 @@ class DashboardController extends Controller
 
         // Misma base que DerivacionController::getBaseQuery: partir desde usuarios
         $query = DB::table('usuarios')
-            ->select('usuarios.id')
             ->leftJoin($tableName, DB::raw('CAST(usuarios.cmp AS VARCHAR)'), '=', DB::raw("CAST({$tableName}.CMP AS VARCHAR)"))
             ->where('usuarios.estado', 1);
 
