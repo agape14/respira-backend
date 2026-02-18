@@ -50,7 +50,7 @@ class DerivacionController extends Controller
             // MINSA: Solo los que están en serumista_equivalentes_remunerados
             // y NO están en serumista_remunerados
             $query->whereNotNull("{$tableName}.CMP");
-            
+
             // Excluir los que están en ESSALUD (remunerados)
             $query->whereNotExists(function ($sub) {
                 $sub->select(DB::raw(1))

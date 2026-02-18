@@ -602,10 +602,10 @@ class DashboardController extends Controller
             \Illuminate\Support\Facades\Log::info('Dashboard: [PASO 6] Iniciando consultas de derivaciones...');
             $derivStart = microtime(true);
 
-            // Total de casos derivados - Usar lógica de pacientes de alto riesgo (misma que DerivacionController)
+            // Total de casos derivados - Usar lógica de DerivacionController (sin filtro padrón para coincidir con /derivaciones)
             $stepStart = microtime(true);
-            $essaludHighRisk = $this->getHighRiskCountByEntity('ESSALUD', $filteredUserIds);
-            $minsaHighRisk = $this->getHighRiskCountByEntity('MINSA', $filteredUserIds);
+            $essaludHighRisk = $this->getHighRiskCountByEntity('ESSALUD', null);
+            $minsaHighRisk = $this->getHighRiskCountByEntity('MINSA', null);
             $highRiskTotal = $essaludHighRisk + $minsaHighRisk;
 
             // También contar derivados de la tabla (aunque esté vacía)
@@ -683,15 +683,12 @@ class DashboardController extends Controller
             \Illuminate\Support\Facades\Log::info('Dashboard: [PASO 6.7] Iniciando derivaciones por tipo de evaluación...');
 
             $stepStart = microtime(true);
-            // ASQ: pacientes con resultado != 'Sin riesgo'
+            // ASQ: solo Riesgo suicida agudo/inminente (igual que DerivacionController)
             $derivacionesAsqQuery = DB::table('usuarios')
                 ->join('asq5_responses', 'usuarios.id', '=', 'asq5_responses.user_id')
-                ->where('asq5_responses.resultado', '!=', 'Sin riesgo')
+                ->where('asq5_responses.resultado', 'Riesgo suicida agudo/inminente')
                 ->whereRaw('asq5_responses.id = (SELECT MAX(id) FROM asq5_responses r2 WHERE r2.user_id = asq5_responses.user_id)')
                 ->where('usuarios.estado', 1);
-            if ($filteredUserIds !== null) {
-                $derivacionesAsqQuery->whereIn('usuarios.id', $filteredUserIds);
-            }
             $derivacionesAsq = $derivacionesAsqQuery->selectRaw('COUNT(DISTINCT usuarios.id) as total')->value('total') ?? 0;
             $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
             \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 6.7.1] Derivaciones ASQ obtenidas en {$stepElapsed}ms", ['total' => $derivacionesAsq]);
@@ -703,9 +700,6 @@ class DashboardController extends Controller
                 ->where('phq9_responses.riesgo', 'Riesgo alto')
                 ->whereRaw('phq9_responses.id_encuesta = (SELECT MAX(id_encuesta) FROM phq9_responses r2 WHERE r2.user_id = phq9_responses.user_id)')
                 ->where('usuarios.estado', 1);
-            if ($filteredUserIds !== null) {
-                $derivacionesPhqQuery->whereIn('usuarios.id', $filteredUserIds);
-            }
             $derivacionesPhq = $derivacionesPhqQuery->selectRaw('COUNT(DISTINCT usuarios.id) as total')->value('total') ?? 0;
             $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
             \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 6.7.2] Derivaciones PHQ obtenidas en {$stepElapsed}ms", ['total' => $derivacionesPhq]);
@@ -717,9 +711,6 @@ class DashboardController extends Controller
                 ->where('gad_responses.riesgo', 'Riesgo alto')
                 ->whereRaw('gad_responses.id_encuesta = (SELECT MAX(id_encuesta) FROM gad_responses r2 WHERE r2.user_id = gad_responses.user_id)')
                 ->where('usuarios.estado', 1);
-            if ($filteredUserIds !== null) {
-                $derivacionesGadQuery->whereIn('usuarios.id', $filteredUserIds);
-            }
             $derivacionesGad = $derivacionesGadQuery->selectRaw('COUNT(DISTINCT usuarios.id) as total')->value('total') ?? 0;
             $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
             \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 6.7.3] Derivaciones GAD obtenidas en {$stepElapsed}ms", ['total' => $derivacionesGad]);
@@ -735,23 +726,17 @@ class DashboardController extends Controller
                 })
                 ->whereRaw('mbi_responses.id_encuesta = (SELECT MAX(id_encuesta) FROM mbi_responses r2 WHERE r2.user_id = mbi_responses.user_id)')
                 ->where('usuarios.estado', 1);
-            if ($filteredUserIds !== null) {
-                $derivacionesMbiQuery->whereIn('usuarios.id', $filteredUserIds);
-            }
             $derivacionesMbi = $derivacionesMbiQuery->selectRaw('COUNT(DISTINCT usuarios.id) as total')->value('total') ?? 0;
             $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
             \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 6.7.4] Derivaciones MBI obtenidas en {$stepElapsed}ms", ['total' => $derivacionesMbi]);
 
             $stepStart = microtime(true);
-            // AUDIT: pacientes con consumo problemático/dependencia/riesgo
+            // AUDIT: Consumo problemático, Probable consumo problemático, Dependencia (igual que DerivacionController)
             $derivacionesAuditQuery = DB::table('usuarios')
                 ->join('audit_responses', 'usuarios.id', '=', 'audit_responses.user_id')
-                ->whereIn('audit_responses.riesgo', ['Consumo problemático', 'Dependencia', 'Riesgo'])
+                ->whereIn('audit_responses.riesgo', ['Consumo problemático', 'Probable consumo problemático', 'Dependencia'])
                 ->whereRaw('audit_responses.id_encuesta = (SELECT MAX(id_encuesta) FROM audit_responses r2 WHERE r2.user_id = audit_responses.user_id)')
                 ->where('usuarios.estado', 1);
-            if ($filteredUserIds !== null) {
-                $derivacionesAuditQuery->whereIn('usuarios.id', $filteredUserIds);
-            }
             $derivacionesAudit = $derivacionesAuditQuery->selectRaw('COUNT(DISTINCT usuarios.id) as total')->value('total') ?? 0;
             $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
             \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 6.7.5] Derivaciones AUDIT obtenidas en {$stepElapsed}ms", ['total' => $derivacionesAudit]);
@@ -1662,27 +1647,38 @@ class DashboardController extends Controller
 
     /**
      * Obtener conteo de pacientes de alto riesgo por entidad (misma lógica que DerivacionController)
+     * ESSALUD: usuarios en serumista_remunerados O no en serumista_equivalentes (incluye todos los tamizados/derivados)
+     * MINSA: usuarios en serumista_equivalentes excluyendo remunerados
      */
     private function getHighRiskCountByEntity($entidad, $filteredUserIds = null)
     {
         $tableName = $entidad === 'MINSA' ? 'serumista_equivalentes_remunerados' : 'serumista_remunerados';
 
-        // Construir query base (misma lógica que DerivacionController::getBaseQuery)
-        // Usar CAST para asegurar que el join funcione correctamente con SQL Server
-        $query = DB::table($tableName)
-            ->join('usuarios', DB::raw("CAST({$tableName}.CMP AS VARCHAR)"), '=', DB::raw('CAST(usuarios.cmp AS VARCHAR)'))
+        // Misma base que DerivacionController::getBaseQuery: partir desde usuarios
+        $query = DB::table('usuarios')
+            ->select('usuarios.id')
+            ->leftJoin($tableName, DB::raw('CAST(usuarios.cmp AS VARCHAR(20))'), '=', DB::raw("CAST({$tableName}.CMP AS VARCHAR(20))"))
             ->where('usuarios.estado', 1);
 
-        // Para MINSA, excluir los que ya están en ESSALUD
-        if ($entidad === 'MINSA') {
-            $query->whereNotExists(function ($sub) {
-                $sub->select(DB::raw(1))
-                    ->from('serumista_remunerados')
-                    ->whereColumn('serumista_remunerados.CMP', 'serumista_equivalentes_remunerados.CMP');
+        if ($entidad === 'ESSALUD') {
+            $query->where(function ($q) use ($tableName) {
+                $q->whereNotNull("{$tableName}.CMP")
+                    ->orWhereNotExists(function ($sub) {
+                        $sub->select(DB::raw(1))
+                            ->from('serumista_equivalentes_remunerados')
+                            ->whereColumn(DB::raw('CAST(serumista_equivalentes_remunerados.CMP AS VARCHAR(20))'), DB::raw('CAST(usuarios.cmp AS VARCHAR(20))'));
+                    });
             });
+        } elseif ($entidad === 'MINSA') {
+            $query->whereNotNull("{$tableName}.CMP")
+                ->whereNotExists(function ($sub) {
+                    $sub->select(DB::raw(1))
+                        ->from('serumista_remunerados')
+                        ->whereColumn(DB::raw('CAST(serumista_remunerados.CMP AS VARCHAR(20))'), DB::raw('CAST(usuarios.cmp AS VARCHAR(20))'));
+                });
         }
 
-        // Aplicar filtro de usuarios si existe
+        // Aplicar filtro de usuarios si existe (Dashboard con departamento/institución/modalidad)
         if ($filteredUserIds !== null) {
             $query->whereIn('usuarios.id', $filteredUserIds);
         }
