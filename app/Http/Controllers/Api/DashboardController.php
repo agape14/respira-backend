@@ -569,8 +569,25 @@ class DashboardController extends Controller
                 ->when($filteredUserIds, fn ($q) => $q->whereIn('usuarios.id', $filteredUserIds))
                 ->distinct('usuarios.cmp')
                 ->count('usuarios.cmp');
+
+            // Usuarios que accedieron pero NO están en el padrón (remunerados ni equivalentes)
+            $accedieronNoClasificados = DB::table('usuarios')
+                ->where('usuarios.estado', 1)
+                ->where('usuarios.perfil_id', 3)
+                ->whereNotIn('usuarios.cmp', ['088372','097481','044840','008190','097438'])
+                ->whereNotExists(function ($sub) {
+                    $sub->select(DB::raw(1))
+                        ->from('serumista_equivalentes_remunerados as ser')
+                        ->whereRaw('CAST(usuarios.cmp AS VARCHAR) = CAST(ser.CMP AS VARCHAR)');
+                })
+                ->count();
+
             $stepElapsed = round((microtime(true) - $stepStart) * 1000, 2);
-            \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 5.1.2] Usuarios que accedieron completado en {$stepElapsed}ms", ['remunerados' => $accedieronRemunerados, 'equivalentes' => $accedieronEquivalentes]);
+            \Illuminate\Support\Facades\Log::info("Dashboard: [PASO 5.1.2] Usuarios que accedieron completado en {$stepElapsed}ms", [
+                'remunerados' => $accedieronRemunerados,
+                'equivalentes' => $accedieronEquivalentes,
+                'no_clasificados' => $accedieronNoClasificados,
+            ]);
 
             // Tamizados por Modalidad - Usar lógica del query: usuarios con evaluaciones,
             // REMUNERADOS= en serumista_remunerados, EQUIVALENTES= en serumista_equivalentes MODALIDAD=EQUIVALENTES (no en remunerados)
@@ -754,10 +771,10 @@ class DashboardController extends Controller
                 'total_remunerados' => $totalRemunerados,
                 'total_equivalentes' => $totalEquivalentes,
                 'total_no_clasificados' => 0,
-                'accedieron_total' => $accedieronRemunerados + $accedieronEquivalentes,
+                'accedieron_total' => $accedieronRemunerados + $accedieronEquivalentes + $accedieronNoClasificados,
                 'accedieron_remunerados' => $accedieronRemunerados,
                 'accedieron_equivalentes' => $accedieronEquivalentes,
-                'accedieron_no_clasificados' => 0,
+                'accedieron_no_clasificados' => $accedieronNoClasificados,
                 'tamizados_total' => $tamizadosCounts['total'],
                 'tamizados_remunerados' => $tamizadosRemunerados,
                 'tamizados_equivalentes' => $tamizadosEquivalentes,
