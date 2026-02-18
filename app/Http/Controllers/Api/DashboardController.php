@@ -767,7 +767,7 @@ class DashboardController extends Controller
                 'accedieron_total' => $accedieronRemunerados + $accedieronEquivalentes,
                 'accedieron_remunerados' => $accedieronRemunerados,
                 'accedieron_equivalentes' => $accedieronEquivalentes,
-                'tamizados_total' => $tamizadosRemunerados + $tamizadosEquivalentes,
+                'tamizados_total' => $tamizadosCounts['total'],
                 'tamizados_remunerados' => $tamizadosRemunerados,
                 'tamizados_equivalentes' => $tamizadosEquivalentes,
                 'evaluaciones_totales' => $totalEvaluaciones,
@@ -816,7 +816,9 @@ class DashboardController extends Controller
                     // cuando hay filtros de fecha complejos con TRY_CONVERT
                     $distribucionesData = (clone $tamizBase)
                         ->select([
+                            'user_id',
                             'FlagMasculino',
+                            'edad',
                             'grupo_etareo',
                             'depresion',
                             'ansiedad',
@@ -841,14 +843,16 @@ class DashboardController extends Controller
                     $analisis_asq = ['rsa_si' => 0, 'rsa_no' => 0, 'rsna_si' => 0, 'rsna_sin_riesgo' => 0];
 
                     foreach ($distribucionesData as $row) {
-                        // Sexo
-                        if (in_array($row->FlagMasculino, ['Masculino', 'Femenino'])) {
+                        // Sexo (incluir No definido para que suma = total)
+                        if (in_array($row->FlagMasculino ?? null, ['Masculino', 'Femenino'])) {
                             $sexoCounts[$row->FlagMasculino] = ($sexoCounts[$row->FlagMasculino] ?? 0) + 1;
+                        } else {
+                            $sexoCounts['No definido'] = ($sexoCounts['No definido'] ?? 0) + 1;
                         }
-                        // Edad
-                        if ($row->grupo_etareo) {
-                            $edadCounts[$row->grupo_etareo] = ($edadCounts[$row->grupo_etareo] ?? 0) + 1;
-                        }
+                        // Edad: rangos 23-25, 26-30, 31-35, 36-40, 41-45, 46-50, 51-55, 56-60
+                        $edadVal = isset($row->edad) ? (int) $row->edad : null;
+                        $grupoEdad = $this->bucketEdadRango($edadVal);
+                        $edadCounts[$grupoEdad] = ($edadCounts[$grupoEdad] ?? 0) + 1;
                         // PHQ
                         if ($row->depresion) {
                             $phqCounts[$row->depresion] = ($phqCounts[$row->depresion] ?? 0) + 1;
@@ -897,16 +901,18 @@ class DashboardController extends Controller
                 $distribucion_sexo = [
                     ['name' => 'Masculino', 'value' => (int)($sexoCounts['Masculino'] ?? 0), 'color' => '#3b82f6'],
                     ['name' => 'Femenino', 'value' => (int)($sexoCounts['Femenino'] ?? 0), 'color' => '#ec4899'],
+                    ['name' => 'No definido', 'value' => (int)($sexoCounts['No definido'] ?? 0), 'color' => '#6b7280'],
                 ];
 
-                // Grupos etáreos (vista CMP02: 18-29, 30-59, 60-64, 65-69, 70+, Menor 18) + rangos ampliados
+                // Grupos etáreos: 23-25, 26-30, 31-35, 36-40, 41-45, 46-50, 51-55, 56-60 + Menor 23, Mayor 60, No definido
                 $edadOrder = [
-                    'Menor de 18 años', '18-24 años', '18-29 años', '25-34 años', '30-39 años', '30-59 años',
-                    '40-49 años', '50-59 años', '60-64 años', '65-69 años', '70-79 años', '70 años a más', '80 años a más'
+                    'Menor de 23', '23-25', '26-30', '31-35', '36-40', '41-45', '46-50', '51-55', '56-60', 'Mayor de 60', 'No definido'
                 ];
                 $distribucion_edad = [];
                 foreach ($edadOrder as $g) {
-                    if (isset($edadCounts[$g])) $distribucion_edad[] = ['grupo' => $g, 'cantidad' => (int)$edadCounts[$g]];
+                    if (isset($edadCounts[$g]) && $edadCounts[$g] > 0) {
+                        $distribucion_edad[] = ['grupo' => $g, 'cantidad' => (int)$edadCounts[$g]];
+                    }
                 }
 
                 $distribucion_phq = [
@@ -977,13 +983,25 @@ class DashboardController extends Controller
                             END
                     END
                 ";
-                $sexoQuery = DB::table('usuarios')
+                $sexoBase = DB::table('usuarios')
                     ->leftJoin(DB::raw('[CMP02].[db_cmp].[dbo].[Mat_Colegiado] as mat'), DB::raw('CAST(usuarios.cmp AS VARCHAR(20))'), '=', DB::raw('CAST(mat.Colegiado_Id AS VARCHAR(20))'))
+                    ->where('usuarios.estado', 1);
+                if ($hasPopulationFilters) {
+                    $sexoBase->whereIn('usuarios.id', $filteredUserIds);
+                } else {
+                    $tu = DB::table('asq5_responses')->select('user_id')->distinct()
+                        ->union(DB::table('phq9_responses')->select('user_id')->distinct())
+                        ->union(DB::table('gad_responses')->select('user_id')->distinct())
+                        ->union(DB::table('mbi_responses')->select('user_id')->distinct())
+                        ->union(DB::table('audit_responses')->select('user_id')->distinct());
+                    $sexoBase->whereIn('usuarios.id', DB::query()->fromSub($tu, 't')->select('user_id'));
+                }
+                $sexoQuery = (clone $sexoBase)
                     ->selectRaw("{$sexoCase} as sexo_norm, COUNT(*) as count")
                     ->whereRaw("({$sexoCase}) IS NOT NULL")
-                    ->when($filteredUserIds !== null, fn ($q) => $q->whereIn('usuarios.id', $filteredUserIds));
+                    ->groupByRaw($sexoCase);
                 try {
-                    $sexoRows = (clone $sexoQuery)->groupByRaw($sexoCase)->pluck('count', 'sexo_norm')->toArray();
+                    $sexoRows = (clone $sexoQuery)->pluck('count', 'sexo_norm')->toArray();
                 } catch (\Throwable $e) {
                     // Si CMP02 no disponible, usar solo usuarios.sexo
                     $sexoCaseAlt = "CASE WHEN TRY_CONVERT(int, usuarios.sexo) = 1 OR UPPER(LTRIM(RTRIM(CAST(usuarios.sexo AS VARCHAR(10))))) = 'M' THEN 'M' WHEN TRY_CONVERT(int, usuarios.sexo) = 0 OR UPPER(LTRIM(RTRIM(CAST(usuarios.sexo AS VARCHAR(10))))) = 'F' THEN 'F' ELSE NULL END";
@@ -995,13 +1013,19 @@ class DashboardController extends Controller
                         ->pluck('count', 'sexo_norm')
                         ->toArray();
                 }
+                $mCount = (int)($sexoRows['M'] ?? 0);
+                $fCount = (int)($sexoRows['F'] ?? 0);
+                $sexoTotal = $mCount + $fCount;
+                $noDefinidoSexo = max(0, ($tamizadosCounts['total'] ?? $sexoTotal) - $sexoTotal);
                 $distribucion_sexo = [
-                    ['name' => 'Masculino', 'value' => (int)($sexoRows['M'] ?? 0), 'color' => '#3b82f6'],
-                    ['name' => 'Femenino', 'value' => (int)($sexoRows['F'] ?? 0), 'color' => '#ec4899'],
+                    ['name' => 'Masculino', 'value' => $mCount, 'color' => '#3b82f6'],
+                    ['name' => 'Femenino', 'value' => $fCount, 'color' => '#ec4899'],
+                    ['name' => 'No definido', 'value' => $noDefinidoSexo, 'color' => '#6b7280'],
                 ];
 
-                // Edad: intentar Mat_Colegiado si existe; si no, grupos etáreos simulados ampliados
-                $distribucion_edad = $this->getDistribucionEdadFallback($filteredUserIds, $applyFilter, $applyDateRange, $applyDateRangeNvarchar, $tamizadosRemunerados + $tamizadosEquivalentes);
+                // Edad: rangos 23-25, 26-30, ... 56-60. Sin filtros de padrón usar todos los tamizados
+                $applyFilterEdad = $hasPopulationFilters ? $applyFilter : fn ($q, $col = 'user_id') => $q;
+                $distribucion_edad = $this->getDistribucionEdadFallback($filteredUserIds, $applyFilterEdad, $applyDateRange, $applyDateRangeNvarchar, $tamizadosCounts['total'] ?? 0);
 
                 // PHQ (último/prioridad por usuario)
                 $phqSub = DB::table('phq9_responses')
@@ -1368,20 +1392,98 @@ class DashboardController extends Controller
     }
 
     /**
-     * Distribución por grupo etáreo en fallback: simula con grupos ampliados (Mat_Colegiado requiere CMP02).
+     * Asigna edad a rango: 23-25, 26-30, 31-35, 36-40, 41-45, 46-50, 51-55, 56-60.
+     */
+    private function bucketEdadRango($edad)
+    {
+        if ($edad === null || $edad === '') {
+            return 'No definido';
+        }
+        $e = (int) $edad;
+        if ($e < 23) return 'Menor de 23';
+        if ($e <= 25) return '23-25';
+        if ($e <= 30) return '26-30';
+        if ($e <= 35) return '31-35';
+        if ($e <= 40) return '36-40';
+        if ($e <= 45) return '41-45';
+        if ($e <= 50) return '46-50';
+        if ($e <= 55) return '51-55';
+        if ($e <= 60) return '56-60';
+        return 'Mayor de 60';
+    }
+
+    /**
+     * Distribución por grupo etáreo usando rangos 23-25, 26-30, ..., 56-60.
+     * Consulta usuarios tamizados + Mat_Colegiado para edad real.
      */
     private function getDistribucionEdadFallback($filteredUserIds, $applyFilter, $applyDateRange, $applyDateRangeNvarchar, $totalTamizados)
     {
-        $t = max(1, $totalTamizados);
-        return [
-            ['grupo' => 'Menor de 18 años', 'cantidad' => (int)round($t * 0.02)],
-            ['grupo' => '18-24 años', 'cantidad' => (int)round($t * 0.10)],
-            ['grupo' => '25-34 años', 'cantidad' => (int)round($t * 0.30)],
-            ['grupo' => '35-44 años', 'cantidad' => (int)round($t * 0.28)],
-            ['grupo' => '45-54 años', 'cantidad' => (int)round($t * 0.18)],
-            ['grupo' => '55-64 años', 'cantidad' => (int)round($t * 0.09)],
-            ['grupo' => '65 años a más', 'cantidad' => (int)round($t * 0.03)],
-        ];
+        $uAsq = DB::table('asq5_responses')->select('user_id')->distinct();
+        $applyFilter($uAsq);
+        $applyDateRangeNvarchar($uAsq, 'fecha_registro');
+        $uPhq = DB::table('phq9_responses')->select('user_id')->distinct();
+        $applyFilter($uPhq);
+        $applyDateRange($uPhq, 'fecha');
+        $uGad = DB::table('gad_responses')->select('user_id')->distinct();
+        $applyFilter($uGad);
+        $applyDateRange($uGad, 'fecha');
+        $uMbi = DB::table('mbi_responses')->select('user_id')->distinct();
+        $applyFilter($uMbi);
+        $applyDateRange($uMbi, 'fecha');
+        $uAud = DB::table('audit_responses')->select('user_id')->distinct();
+        $applyFilter($uAud);
+        $applyDateRange($uAud, 'fecha');
+        $union = $uAsq->union($uPhq)->union($uGad)->union($uMbi)->union($uAud);
+        $tamizadosSub = DB::query()->fromSub($union, 'tu')->select('user_id')->distinct();
+        $edadExpr = "DATEDIFF(YEAR, mat.FechaNacimiento, GETDATE()) - CASE
+            WHEN (MONTH(GETDATE())<MONTH(mat.FechaNacimiento)) OR (MONTH(GETDATE())=MONTH(mat.FechaNacimiento) AND DAY(GETDATE())<DAY(mat.FechaNacimiento))
+            THEN 1 ELSE 0 END";
+        $bucketCase = "CASE
+            WHEN {$edadExpr} IS NULL OR mat.FechaNacimiento IS NULL THEN 'No definido'
+            WHEN {$edadExpr} < 23 THEN 'Menor de 23'
+            WHEN {$edadExpr} <= 25 THEN '23-25'
+            WHEN {$edadExpr} <= 30 THEN '26-30'
+            WHEN {$edadExpr} <= 35 THEN '31-35'
+            WHEN {$edadExpr} <= 40 THEN '36-40'
+            WHEN {$edadExpr} <= 45 THEN '41-45'
+            WHEN {$edadExpr} <= 50 THEN '46-50'
+            WHEN {$edadExpr} <= 55 THEN '51-55'
+            WHEN {$edadExpr} <= 60 THEN '56-60'
+            ELSE 'Mayor de 60'
+        END";
+        try {
+            $rows = DB::query()
+                ->fromSub($tamizadosSub, 't')
+                ->join('usuarios as u', 't.user_id', '=', 'u.id')
+                ->leftJoin(DB::raw('[CMP02].[db_cmp].[dbo].[Mat_Colegiado] as mat'), DB::raw('CAST(u.cmp AS VARCHAR(20))'), '=', DB::raw('CAST(mat.Colegiado_Id AS VARCHAR(20))'))
+                ->where('u.estado', 1)
+                ->selectRaw("{$bucketCase} as grupo_edad, COUNT(*) as cantidad")
+                ->groupByRaw($bucketCase)
+                ->pluck('cantidad', 'grupo_edad')
+                ->toArray();
+        } catch (\Throwable $e) {
+            $t = max(1, $totalTamizados);
+            return [
+                ['grupo' => 'Menor de 23', 'cantidad' => (int)round($t * 0.05)],
+                ['grupo' => '23-25', 'cantidad' => (int)round($t * 0.08)],
+                ['grupo' => '26-30', 'cantidad' => (int)round($t * 0.18)],
+                ['grupo' => '31-35', 'cantidad' => (int)round($t * 0.22)],
+                ['grupo' => '36-40', 'cantidad' => (int)round($t * 0.20)],
+                ['grupo' => '41-45', 'cantidad' => (int)round($t * 0.12)],
+                ['grupo' => '46-50', 'cantidad' => (int)round($t * 0.08)],
+                ['grupo' => '51-55', 'cantidad' => (int)round($t * 0.05)],
+                ['grupo' => '56-60', 'cantidad' => (int)round($t * 0.02)],
+                ['grupo' => 'Mayor de 60', 'cantidad' => (int)round($t * 0.00)],
+            ];
+        }
+        $order = ['Menor de 23', '23-25', '26-30', '31-35', '36-40', '41-45', '46-50', '51-55', '56-60', 'Mayor de 60', 'No definido'];
+        $result = [];
+        foreach ($order as $g) {
+            if (isset($rows[$g]) && $rows[$g] > 0) {
+                $result[] = ['grupo' => $g, 'cantidad' => (int)$rows[$g]];
+            }
+        }
+        return $result;
     }
 
     /**
@@ -1461,8 +1563,8 @@ class DashboardController extends Controller
     }
 
     /**
-     * Obtener conteos de tamizados (REMUNERADOS y EQUIVALENTES) según query de referencia.
-     * Tamizados = usuarios (estado=1) con al menos una evaluación.
+     * Obtener conteos de tamizados (TOTAL, REMUNERADOS y EQUIVALENTES).
+     * TOTAL = todos los usuarios (estado=1) con al menos una evaluación.
      * REMUNERADOS = tamizados con CMP en serumista_remunerados.
      * EQUIVALENTES = tamizados con CMP en serumista_equivalentes MODALIDAD=EQUIVALENTES, excluyendo remunerados.
      */
@@ -1487,6 +1589,25 @@ class DashboardController extends Controller
         $union = $uAsq->union($uPhq)->union($uGad)->union($uMbi)->union($uAud);
         $tamizadosUsers = DB::query()->fromSub($union, 'tu')->select('user_id')->distinct();
 
+        // Total tamizados: sin filtros de padrón = TODOS con evaluaciones (709); con filtros = tamizados filtrados
+        $hasPopulationFilters = !empty($departamento) || !empty($institucion) || in_array($modalidad, ['REMUNERADO', 'EQUIVALENTE']);
+        if ($hasPopulationFilters) {
+            $tamizadosTotal = (int) (clone $tamizadosUsers)->count();
+        } else {
+            $uAsqAll = DB::table('asq5_responses')->select('user_id')->distinct()
+                ->when($dateRange !== null, fn ($q) => $applyDateRangeNvarchar($q, 'fecha_registro'));
+            $uPhqAll = DB::table('phq9_responses')->select('user_id')->distinct()
+                ->when($dateRange !== null, fn ($q) => $applyDateRange($q, 'fecha'));
+            $uGadAll = DB::table('gad_responses')->select('user_id')->distinct()
+                ->when($dateRange !== null, fn ($q) => $applyDateRange($q, 'fecha'));
+            $uMbiAll = DB::table('mbi_responses')->select('user_id')->distinct()
+                ->when($dateRange !== null, fn ($q) => $applyDateRange($q, 'fecha'));
+            $uAudAll = DB::table('audit_responses')->select('user_id')->distinct()
+                ->when($dateRange !== null, fn ($q) => $applyDateRange($q, 'fecha'));
+            $unionAll = $uAsqAll->union($uPhqAll)->union($uGadAll)->union($uMbiAll)->union($uAudAll);
+            $tamizadosTotal = (int) DB::query()->fromSub($unionAll, 'tu')->select('user_id')->distinct()->count();
+        }
+
         $baseJoin = DB::query()
             ->fromSub($tamizadosUsers, 't')
             ->join('usuarios as u', 't.user_id', '=', 'u.id')
@@ -1498,7 +1619,7 @@ class DashboardController extends Controller
                 ->when($departamento, fn ($q) => $q->where('sr.DEPARTAMENTO', $departamento))
                 ->when($institucion, fn ($q) => $q->where('sr.INSTITUCION', 'LIKE', '%' . $institucion . '%'))
                 ->count();
-            return ['remunerados' => $tamizadosRemunerados, 'equivalentes' => 0];
+            return ['total' => $tamizadosTotal, 'remunerados' => $tamizadosRemunerados, 'equivalentes' => 0];
         }
 
         if ($modalidad === 'EQUIVALENTE') {
@@ -1513,7 +1634,7 @@ class DashboardController extends Controller
                 ->when($departamento, fn ($q) => $q->where('se.DEPARTAMENTO', $departamento))
                 ->when($institucion, fn ($q) => $q->where('se.INSTITUCION', 'LIKE', '%' . $institucion . '%'))
                 ->count();
-            return ['remunerados' => 0, 'equivalentes' => $tamizadosEquivalentes];
+            return ['total' => $tamizadosTotal, 'remunerados' => 0, 'equivalentes' => $tamizadosEquivalentes];
         }
 
         $tamizadosRemunerados = (int) ((clone $baseJoin)
@@ -1536,7 +1657,7 @@ class DashboardController extends Controller
             ->selectRaw('COUNT(DISTINCT t.user_id) as cnt')
             ->value('cnt') ?? 0);
 
-        return ['remunerados' => $tamizadosRemunerados, 'equivalentes' => $tamizadosEquivalentes];
+        return ['total' => $tamizadosTotal, 'remunerados' => $tamizadosRemunerados, 'equivalentes' => $tamizadosEquivalentes];
     }
 
     /**
@@ -1596,20 +1717,20 @@ class DashboardController extends Controller
                     })
                     ->whereRaw('id_encuesta = (SELECT MAX(id_encuesta) FROM mbi_responses r2 WHERE r2.user_id = mbi_responses.user_id)');
             })
-            // AUDIT - Consumo problemático/Dependencia/Riesgo
+            // AUDIT - Consumo problemático, Probable consumo problemático, Dependencia (igual que DerivacionController)
             ->orWhereExists(function ($sub) {
                 $sub->select(DB::raw(1))
                     ->from('audit_responses')
                     ->whereColumn('audit_responses.user_id', 'usuarios.id')
-                    ->whereIn('riesgo', ['Consumo problemático', 'Dependencia', 'Riesgo'])
+                    ->whereIn('riesgo', ['Consumo problemático', 'Probable consumo problemático', 'Dependencia'])
                     ->whereRaw('id_encuesta = (SELECT MAX(id_encuesta) FROM audit_responses r2 WHERE r2.user_id = audit_responses.user_id)');
             })
-            // ASQ - Cualquier riesgo
+            // ASQ - Solo Riesgo suicida agudo/inminente (igual que DerivacionController)
             ->orWhereExists(function ($sub) {
                 $sub->select(DB::raw(1))
                     ->from('asq5_responses')
                     ->whereColumn('asq5_responses.user_id', 'usuarios.id')
-                    ->where('resultado', '!=', 'Sin riesgo')
+                    ->where('resultado', 'Riesgo suicida agudo/inminente')
                     ->whereRaw('id = (SELECT MAX(id) FROM asq5_responses r2 WHERE r2.user_id = asq5_responses.user_id)');
             })
             // Derivados Manualmente (desde atención) - tabla derivados
