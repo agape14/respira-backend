@@ -1752,96 +1752,110 @@ class DashboardController extends Controller
      */
     public function tamizadosNoClasificados(Request $request)
     {
-        $uAsq = DB::table('asq5_responses')->select('user_id')->distinct();
-        $uPhq = DB::table('phq9_responses')->select('user_id')->distinct();
-        $uGad = DB::table('gad_responses')->select('user_id')->distinct();
-        $uMbi = DB::table('mbi_responses')->select('user_id')->distinct();
-        $uAud = DB::table('audit_responses')->select('user_id')->distinct();
-        $union = $uAsq->union($uPhq)->union($uGad)->union($uMbi)->union($uAud);
-        $tamizadosSub = DB::query()->fromSub($union, 'tu')->select('user_id')->distinct();
+        try {
+            $uAsq = DB::table('asq5_responses')->select('user_id')->distinct();
+            $uPhq = DB::table('phq9_responses')->select('user_id')->distinct();
+            $uGad = DB::table('gad_responses')->select('user_id')->distinct();
+            $uMbi = DB::table('mbi_responses')->select('user_id')->distinct();
+            $uAud = DB::table('audit_responses')->select('user_id')->distinct();
+            $union = $uAsq->union($uPhq)->union($uGad)->union($uMbi)->union($uAud);
+            $tamizadosSub = DB::query()->fromSub($union, 'tu')->select('user_id')->distinct();
 
-        $query = DB::query()
-            ->fromSub($tamizadosSub, 't')
-            ->join('usuarios as u', 't.user_id', '=', 'u.id')
-            ->where('u.estado', 1)
-            ->whereNotExists(function ($sub) {
-                $sub->select(DB::raw(1))
-                    ->from('serumista_remunerados as sr')
-                    ->whereRaw('CAST(u.cmp AS VARCHAR) = CAST(sr.CMP AS VARCHAR)');
-            })
-            ->whereNotExists(function ($sub) {
-                $sub->select(DB::raw(1))
-                    ->from('serumista_equivalentes_remunerados as se')
-                    ->whereRaw('CAST(u.cmp AS VARCHAR) = CAST(se.CMP AS VARCHAR)')
-                    ->where('se.MODALIDAD', 'EQUIVALENTES')
-                    ->whereNotExists(function ($s2) {
-                        $s2->select(DB::raw(1))
-                            ->from('serumista_remunerados as sr2')
-                            ->whereRaw('CAST(sr2.CMP AS VARCHAR) = CAST(se.CMP AS VARCHAR)');
-                    });
-            })
-            ->select([
-                'u.id',
-                'u.nombre_completo',
-                'u.cmp',
-                'u.nombre_usuario as dni',
-                'u.telefono',
-            ])
-            ->orderBy('u.nombre_completo');
+            $query = DB::query()
+                ->fromSub($tamizadosSub, 't')
+                ->join('usuarios as u', 't.user_id', '=', 'u.id')
+                ->where('u.estado', 1)
+                ->whereNotExists(function ($sub) {
+                    $sub->select(DB::raw(1))
+                        ->from('serumista_remunerados as sr')
+                        ->whereRaw('CAST(u.cmp AS VARCHAR) = CAST(sr.CMP AS VARCHAR)');
+                })
+                ->whereNotExists(function ($sub) {
+                    $sub->select(DB::raw(1))
+                        ->from('serumista_equivalentes_remunerados as se')
+                        ->whereRaw('CAST(u.cmp AS VARCHAR) = CAST(se.CMP AS VARCHAR)')
+                        ->where('se.MODALIDAD', 'EQUIVALENTES')
+                        ->whereNotExists(function ($s2) {
+                            $s2->select(DB::raw(1))
+                                ->from('serumista_remunerados as sr2')
+                                ->whereRaw('CAST(sr2.CMP AS VARCHAR) = CAST(se.CMP AS VARCHAR)');
+                        });
+                })
+                ->select([
+                    'u.id',
+                    'u.nombre_completo',
+                    'u.cmp',
+                    'u.nombre_usuario as dni',
+                    'u.telefono',
+                ])
+                ->orderBy('u.nombre_completo');
 
-        $lista = $query->get();
+            $lista = $query->get();
 
-        $format = $request->query('format', 'json');
-        if (strtolower($format) === 'xlsx') {
-            return $this->exportTamizadosNoClasificadosExcel($lista);
+            $format = $request->query('format', 'json');
+            if (strtolower($format) === 'xlsx') {
+                return $this->exportTamizadosNoClasificadosExcel($lista);
+            }
+            return response()->json([
+                'total' => $lista->count(),
+                'data' => $lista,
+            ]);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('Dashboard tamizadosNoClasificados error', [
+                'message' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+            return response()->json(['error' => $e->getMessage()], 500);
         }
-        return response()->json([
-            'total' => $lista->count(),
-            'data' => $lista,
-        ]);
     }
 
     private function exportTamizadosNoClasificadosExcel($lista)
     {
-        $spreadsheet = new Spreadsheet();
-        $sheet = $spreadsheet->getActiveSheet();
-        $sheet->setTitle('Tamizados No Clasificados');
+        try {
+            $spreadsheet = new Spreadsheet();
+            $sheet = $spreadsheet->getActiveSheet();
+            $sheet->setTitle('Tamizados No Clasificados');
 
-        $headers = ['N°', 'Nombre completo', 'CMP', 'DNI', 'Teléfono', '¿Remunerado o Equivalente?'];
-        foreach ($headers as $i => $h) {
-            $sheet->setCellValueByColumnAndRow($i + 1, 1, $h);
+            $headers = ['N°', 'Nombre completo', 'CMP', 'DNI', 'Teléfono', '¿Remunerado o Equivalente?'];
+            foreach ($headers as $i => $h) {
+                $sheet->setCellValue([$i + 1, 1], $h);
+            }
+            $sheet->getStyle('A1:F1')->applyFromArray([
+                'font' => ['bold' => true, 'color' => ['rgb' => 'FFFFFF']],
+                'fill' => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['rgb' => '4F81BD']],
+                'alignment' => ['horizontal' => Alignment::HORIZONTAL_CENTER],
+            ]);
+
+            $row = 2;
+            foreach ($lista as $idx => $r) {
+                $sheet->setCellValue([1, $row], $idx + 1);
+                $sheet->setCellValue([2, $row], $r->nombre_completo ?? '');
+                $sheet->setCellValue([3, $row], $r->cmp ?? '');
+                $sheet->setCellValue([4, $row], $r->dni ?? '');
+                $sheet->setCellValue([5, $row], $r->telefono ?? '');
+                $sheet->setCellValue([6, $row], '');
+                $row++;
+            }
+
+            foreach (range('A', 'F') as $col) {
+                $sheet->getColumnDimension($col)->setAutoSize(true);
+            }
+
+            $filename = 'Tamizados_No_Clasificados_' . date('Y-m-d_His') . '.xlsx';
+            $tempFile = tempnam(sys_get_temp_dir(), 'excel_');
+            $writer = new Xlsx($spreadsheet);
+            $writer->save($tempFile);
+
+            return response()->download($tempFile, $filename, [
+                'Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            ])->deleteFileAfterSend(true);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('exportTamizadosNoClasificadosExcel error', [
+                'message' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+            throw $e;
         }
-        $sheet->getStyle('A1:F1')->applyFromArray([
-            'font' => ['bold' => true, 'color' => ['rgb' => 'FFFFFF']],
-            'fill' => ['fillType' => Fill::FILL_SOLID, 'startColor' => ['rgb' => '4F81BD']],
-            'alignment' => ['horizontal' => Alignment::HORIZONTAL_CENTER],
-        ]);
-
-        $row = 2;
-        foreach ($lista as $idx => $r) {
-            $sheet->setCellValueByColumnAndRow(1, $row, $idx + 1);
-            $sheet->setCellValueByColumnAndRow(2, $row, $r->nombre_completo ?? '');
-            $sheet->setCellValueByColumnAndRow(3, $row, $r->cmp ?? '');
-            $sheet->setCellValueByColumnAndRow(4, $row, $r->dni ?? '');
-            $sheet->setCellValueByColumnAndRow(5, $row, $r->telefono ?? '');
-            $sheet->setCellValueByColumnAndRow(6, $row, ''); // Columna para que indiquen Remunerado/Equivalente
-            $row++;
-        }
-
-        foreach (range('A', 'F') as $col) {
-            $sheet->getColumnDimension($col)->setAutoSize(true);
-        }
-
-        $filename = 'Tamizados_No_Clasificados_' . date('Y-m-d_His') . '.xlsx';
-        $writer = new Xlsx($spreadsheet);
-        $tempFile = sys_get_temp_dir() . '/' . $filename;
-        $writer->save($tempFile);
-
-        $response = response()->download($tempFile, $filename, [
-            'Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        ]);
-        $response->deleteFileAfterSend(true);
-        return $response;
     }
 }
 
