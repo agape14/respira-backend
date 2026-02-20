@@ -38,9 +38,16 @@ class ResultadoTamizajeController extends Controller
      *     @OA\Parameter(
      *         name="search",
      *         in="query",
-     *         description="Buscar por nombre o CMP",
+     *         description="Valor a buscar (a partir de 3 caracteres)",
      *         required=false,
      *         @OA\Schema(type="string")
+     *     ),
+     *     @OA\Parameter(
+     *         name="search_tipo",
+     *         in="query",
+     *         description="Tipo de búsqueda: nombres, cmp o celular (celular = coincidencia exacta por dígitos)",
+     *         required=false,
+     *         @OA\Schema(type="string", enum={"nombres", "cmp", "celular"})
      *     ),
      *     @OA\Response(
      *         response=200,
@@ -62,6 +69,7 @@ class ResultadoTamizajeController extends Controller
             $perPage = $request->get('per_page', 15);
             $page = $request->get('page', 1);
             $search = $request->get('search');
+            $searchTipo = $request->get('search_tipo', 'nombres'); // cmp | nombres | celular
             $tipo = $request->get('tipo');
             $fechaInicio = $request->get('fecha_inicio');
             $fechaFin = $request->get('fecha_fin');
@@ -91,6 +99,7 @@ class ResultadoTamizajeController extends Controller
                         COALESCE(s.NumeroDocumento, u.nombre_usuario) AS dni,
                         COALESCE(s.[APELLIDOS Y NOMBRES], u.nombre_completo) AS nombre_completo,
                         COALESCE(s.CMP, u.cmp) AS cmp,
+                        COALESCE(u.telefono, '') AS telefono,
 
                         asq.resultado AS asq, asq.fecha_registro AS asq_fecha, asq.id AS asq_id,
                         phq.riesgo AS phq, phq.puntaje AS phq_puntaje, phq.fecha AS phq_fecha, phq.id_encuesta AS phq_id,
@@ -118,12 +127,28 @@ class ResultadoTamizajeController extends Controller
             $where = " WHERE 1=1";
             $params = [];
 
-            if ($search) {
-                $where .= " AND (nombre_completo LIKE ? OR cmp LIKE ? OR dni LIKE ?)";
-                $searchParam = "%{$search}%";
-                $params[] = $searchParam;
-                $params[] = $searchParam;
-                $params[] = $searchParam;
+            // Búsqueda específica por tipo; mínimos: nombres 4, CMP 5, celular 8
+            $searchTrim = $search ? trim($search) : '';
+            $minLen = $searchTipo === 'celular' ? 8 : ($searchTipo === 'cmp' ? 5 : 4);
+            $searchOk = $searchTrim !== '' && strlen($searchTrim) >= $minLen;
+            if ($searchTipo === 'celular') {
+                $searchDigits = preg_replace('/\D/', '', $searchTrim);
+                $searchOk = $searchOk && strlen($searchDigits) >= 8;
+            }
+            if ($searchOk) {
+                if ($searchTipo === 'celular') {
+                    $searchDigits = preg_replace('/\D/', '', $searchTrim);
+                    if ($searchDigits !== '') {
+                        $where .= " AND (REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(telefono, N' ', N''), N'-', N''), N'+', N''), N'.', N''), N',', N''), N'(', N''), N')', N''), N'/', N'') = ?)";
+                        $params[] = $searchDigits;
+                    }
+                } elseif ($searchTipo === 'cmp') {
+                    $where .= " AND cmp LIKE ?";
+                    $params[] = '%' . $searchTrim . '%';
+                } else {
+                    $where .= " AND nombre_completo LIKE ?";
+                    $params[] = '%' . $searchTrim . '%';
+                }
             }
 
             if ($tipo && $tipo !== 'todos') {
@@ -426,11 +451,12 @@ class ResultadoTamizajeController extends Controller
     public function exportarTodo(Request $request)
     {
         $search = $request->get('search');
+        $searchTipo = $request->get('search_tipo', 'nombres');
         $idProceso = $request->get('id_proceso');
-        return $this->generarExcel(null, $search, $idProceso, null);
+        return $this->generarExcel(null, $search, $idProceso, null, $searchTipo);
     }
 
-    private function generarExcel($dni = null, $search = null, $idProceso = null, $cmp = null)
+    private function generarExcel($dni = null, $search = null, $idProceso = null, $cmp = null, $searchTipo = 'nombres')
     {
         try {
             $proceso = null;
@@ -579,12 +605,27 @@ class ResultadoTamizajeController extends Controller
                 $params[] = ($cmp !== null && $cmp !== '') ? $cmp : $dni;
             }
 
-            if ($search) {
-                $sql .= " AND (COALESCE(s.[APELLIDOS Y NOMBRES], u.nombre_completo) LIKE ? OR COALESCE(s.CMP, u.cmp) LIKE ? OR COALESCE(s.NumeroDocumento, u.nombre_usuario) LIKE ?)";
-                $searchParam = "%{$search}%";
-                $params[] = $searchParam;
-                $params[] = $searchParam;
-                $params[] = $searchParam;
+            $searchTrim = $search ? trim($search) : '';
+            $minLen = $searchTipo === 'celular' ? 8 : ($searchTipo === 'cmp' ? 5 : 4);
+            $searchOk = $searchTrim !== '' && strlen($searchTrim) >= $minLen;
+            if ($searchTipo === 'celular') {
+                $searchDigits = preg_replace('/\D/', '', $searchTrim);
+                $searchOk = $searchOk && strlen($searchDigits) >= 8;
+            }
+            if ($searchOk) {
+                if ($searchTipo === 'celular') {
+                    $searchDigits = preg_replace('/\D/', '', $searchTrim);
+                    if ($searchDigits !== '') {
+                        $sql .= " AND (REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(u.telefono, N' ', N''), N'-', N''), N'+', N''), N'.', N''), N',', N''), N'(', N''), N')', N''), N'/', N'') = ?)";
+                        $params[] = $searchDigits;
+                    }
+                } elseif ($searchTipo === 'cmp') {
+                    $sql .= " AND (COALESCE(s.CMP, u.cmp) LIKE ?)";
+                    $params[] = '%' . $searchTrim . '%';
+                } else {
+                    $sql .= " AND (COALESCE(s.[APELLIDOS Y NOMBRES], u.nombre_completo) LIKE ?)";
+                    $params[] = '%' . $searchTrim . '%';
+                }
             }
 
             if ($proceso) {
