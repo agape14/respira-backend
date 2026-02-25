@@ -515,8 +515,8 @@ class ResultadoTamizajeController extends Controller
                     s.[NOMBRE DE ESTABLECIMIENTO] AS nombre_de_establecimiento,
                     s.CATEGORIA AS categoria,
                     s.PRESUPUESTO AS presupuesto,
-                    s.[ZAF (*)] AS zaf,
-                    s.[ZE (**)] AS ze,
+                    s.[ZAF] AS zaf,
+                    s.[ZE] AS ze,
 
                     asq.resultado AS asq_resultado,
                     asq.fecha_registro AS asq_fecha,
@@ -541,7 +541,7 @@ class ResultadoTamizajeController extends Controller
                     mbi.fecha AS mbi_fecha
 
                 FROM usuarios u
-                LEFT JOIN serumista_remunerados s ON u.cmp = s.CMP
+                LEFT JOIN serumista_equivalentes_remunerados s ON u.cmp = s.CMP
                 LEFT JOIN [CMP02].[db_cmp].[dbo].[Mat_Colegiado] mat ON CAST(u.cmp AS VARCHAR(20)) = CAST(mat.Colegiado_Id AS VARCHAR(20))
 
                 OUTER APPLY (
@@ -663,8 +663,8 @@ class ResultadoTamizajeController extends Controller
                 'nombre_de_establecimiento' => 'ESTABLECIMIENTO',
                 'categoria' => 'CATEGORÍA',
                 'presupuesto' => 'PRESUPUESTO',
-                'zaf' => 'ZAF (*)',
-                'ze' => 'ZE (**)',
+                'zaf' => 'ZAF',
+                'ze' => 'ZE',
                 'riesgo_suicida_agudo' => 'INMINENTE = RIESGO SUICIDA AGUDO',
                 'fecha_suicidio_agudo' => 'FECHA DE REALIZACIÓN DEL TEST',
                 'riesgo_suicida_no_agudo' => 'RIESGO SUICIDA NO AGUDO',
