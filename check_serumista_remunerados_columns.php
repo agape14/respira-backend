@@ -8,7 +8,7 @@ use Illuminate\Support\Facades\DB;
 
 $sql = "SELECT COLUMN_NAME 
         FROM INFORMATION_SCHEMA.COLUMNS 
-        WHERE TABLE_NAME = 'serumista_remunerados'";
+        WHERE TABLE_NAME = 'serumista_equivalentes_remunerados'";
 
 $results = DB::connection('sqlsrv')->select($sql);
 foreach ($results as $row) {

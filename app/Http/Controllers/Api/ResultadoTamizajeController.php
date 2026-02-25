@@ -63,18 +63,128 @@ class ResultadoTamizajeController extends Controller
      *     )
      * )
      */
+    /**
+     * Opciones para filtros de tamizaje: DIRESA/GERESA/DIRIS, instituciones, departamentos.
+     * Para provincias y distritos usar tamizajes-filtros/provincias y tamizajes-filtros/distritos.
+     */
+    public function filtros(Request $request)
+    {
+        try {
+            $diresas = DB::connection('sqlsrv')
+                ->table('serumista_equivalentes_remunerados')
+                ->selectRaw("LTRIM(RTRIM(CAST(DIRESA_GERESA_DIRIS AS NVARCHAR(255)))) as valor")
+                ->whereNotNull('DIRESA_GERESA_DIRIS')
+                ->where('DIRESA_GERESA_DIRIS', '<>', '')
+                ->distinct()
+                ->orderBy('valor')
+                ->pluck('valor')
+                ->toArray();
+
+            $instituciones = DB::connection('sqlsrv')
+                ->table('serumista_equivalentes_remunerados')
+                ->selectRaw("LTRIM(RTRIM(CAST(INSTITUCION AS NVARCHAR(255)))) as valor")
+                ->whereNotNull('INSTITUCION')
+                ->where('INSTITUCION', '<>', '')
+                ->distinct()
+                ->orderBy('valor')
+                ->pluck('valor')
+                ->toArray();
+
+            $departamentos = DB::connection('sqlsrv')
+                ->table('serumista_equivalentes_remunerados')
+                ->selectRaw("LTRIM(RTRIM(CAST(DEPARTAMENTO AS NVARCHAR(255)))) as valor")
+                ->whereNotNull('DEPARTAMENTO')
+                ->where('DEPARTAMENTO', '<>', '')
+                ->distinct()
+                ->orderBy('valor')
+                ->pluck('valor')
+                ->toArray();
+
+            return response()->json([
+                'diresas' => array_values(array_filter($diresas)),
+                'instituciones' => array_values(array_filter($instituciones)),
+                'departamentos' => array_values(array_filter($departamentos)),
+            ]);
+        } catch (\Exception $e) {
+            return response()->json([
+                'error' => 'Error al obtener filtros',
+                'message' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Provincias por departamento (para filtro Departamento/Provincia/Distrito).
+     */
+    public function filtrosProvincias(Request $request)
+    {
+        $departamento = $request->get('departamento');
+        if ($departamento === null || $departamento === '') {
+            return response()->json(['provincias' => []]);
+        }
+        try {
+            $provincias = DB::connection('sqlsrv')
+                ->table('serumista_equivalentes_remunerados')
+                ->selectRaw("LTRIM(RTRIM(CAST(PROVINCIA AS NVARCHAR(255)))) as valor")
+                ->whereNotNull('PROVINCIA')
+                ->where('PROVINCIA', '<>', '')
+                ->whereRaw("LTRIM(RTRIM(CAST(DEPARTAMENTO AS NVARCHAR(255)))) = ?", [$departamento])
+                ->distinct()
+                ->orderBy('valor')
+                ->pluck('valor')
+                ->toArray();
+            return response()->json(['provincias' => array_values(array_filter($provincias))]);
+        } catch (\Exception $e) {
+            return response()->json(['provincias' => [], 'error' => $e->getMessage()]);
+        }
+    }
+
+    /**
+     * Distritos por departamento y provincia.
+     */
+    public function filtrosDistritos(Request $request)
+    {
+        $departamento = $request->get('departamento');
+        $provincia = $request->get('provincia');
+        if (($departamento === null || $departamento === '') || ($provincia === null || $provincia === '')) {
+            return response()->json(['distritos' => []]);
+        }
+        try {
+            $distritos = DB::connection('sqlsrv')
+                ->table('serumista_equivalentes_remunerados')
+                ->selectRaw("LTRIM(RTRIM(CAST(DISTRITO AS NVARCHAR(255)))) as valor")
+                ->whereNotNull('DISTRITO')
+                ->where('DISTRITO', '<>', '')
+                ->whereRaw("LTRIM(RTRIM(CAST(DEPARTAMENTO AS NVARCHAR(255)))) = ?", [$departamento])
+                ->whereRaw("LTRIM(RTRIM(CAST(PROVINCIA AS NVARCHAR(255)))) = ?", [$provincia])
+                ->distinct()
+                ->orderBy('valor')
+                ->pluck('valor')
+                ->toArray();
+            return response()->json(['distritos' => array_values(array_filter($distritos))]);
+        } catch (\Exception $e) {
+            return response()->json(['distritos' => [], 'error' => $e->getMessage()]);
+        }
+    }
+
     public function index(Request $request)
     {
         try {
             $perPage = $request->get('per_page', 15);
             $page = $request->get('page', 1);
             $search = $request->get('search');
-            $searchTipo = $request->get('search_tipo', 'nombres'); // cmp | nombres | celular
+            $searchTipo = $request->get('search_tipo', 'nombres'); // cmp | nombres | celular | diresa_geresa_diris | institucion | departamento_provincia_distrito
             $tipo = $request->get('tipo');
             $fechaInicio = $request->get('fecha_inicio');
             $fechaFin = $request->get('fecha_fin');
             $idProceso = $request->get('id_proceso');
             $idProceso = (isset($idProceso) && $idProceso !== '' && ctype_digit((string) $idProceso)) ? (int) $idProceso : null;
+
+            $filtroDiresa = $request->get('filtro_diresa_geresa_diris');
+            $filtroInstitucion = $request->get('filtro_institucion');
+            $filtroDepartamento = $request->get('filtro_departamento');
+            $filtroProvincia = $request->get('filtro_provincia');
+            $filtroDistrito = $request->get('filtro_distrito');
 
             $proceso = null;
             $corteEtiqueta = '';
@@ -100,6 +210,11 @@ class ResultadoTamizajeController extends Controller
                         COALESCE(s.[APELLIDOS Y NOMBRES], u.nombre_completo) AS nombre_completo,
                         COALESCE(s.CMP, u.cmp) AS cmp,
                         COALESCE(u.telefono, '') AS telefono,
+                        COALESCE(LTRIM(RTRIM(CAST(s.DIRESA_GERESA_DIRIS AS NVARCHAR(255)))), N'') AS diresa_geresa_diris,
+                        COALESCE(LTRIM(RTRIM(CAST(s.INSTITUCION AS NVARCHAR(255)))), N'') AS institucion,
+                        COALESCE(LTRIM(RTRIM(CAST(s.DEPARTAMENTO AS NVARCHAR(255)))), N'') AS departamento,
+                        COALESCE(LTRIM(RTRIM(CAST(s.PROVINCIA AS NVARCHAR(255)))), N'') AS provincia,
+                        COALESCE(LTRIM(RTRIM(CAST(s.DISTRITO AS NVARCHAR(255)))), N'') AS distrito,
 
                         asq.resultado AS asq, asq.fecha_registro AS asq_fecha, asq.id AS asq_id,
                         phq.riesgo AS phq, phq.puntaje AS phq_puntaje, phq.fecha AS phq_fecha, phq.id_encuesta AS phq_id,
@@ -110,7 +225,7 @@ class ResultadoTamizajeController extends Controller
                         (SELECT MAX(f) FROM (SELECT asq.fecha_registro AS f UNION ALL SELECT phq.fecha UNION ALL SELECT gad.fecha UNION ALL SELECT mbi.fecha UNION ALL SELECT audit.fecha) AS fechas) as fecha_ultima_evaluacion
 
                     FROM usuarios u
-                    LEFT JOIN serumista_remunerados s ON u.cmp = s.CMP
+                    LEFT JOIN serumista_equivalentes_remunerados s ON u.cmp = s.CMP
 
                     OUTER APPLY (SELECT TOP 1 id, resultado, fecha_registro FROM asq5_responses WHERE user_id = u.id ORDER BY id DESC) asq
                     OUTER APPLY (SELECT TOP 1 id_encuesta, riesgo, puntaje, fecha FROM phq9_responses WHERE user_id = u.id ORDER BY id_encuesta DESC) phq
@@ -135,7 +250,7 @@ class ResultadoTamizajeController extends Controller
                 $searchDigits = preg_replace('/\D/', '', $searchTrim);
                 $searchOk = $searchOk && strlen($searchDigits) >= 8;
             }
-            if ($searchOk) {
+            if ($searchOk && in_array($searchTipo, ['nombres', 'cmp', 'celular'])) {
                 if ($searchTipo === 'celular') {
                     $searchDigits = preg_replace('/\D/', '', $searchTrim);
                     if ($searchDigits !== '') {
@@ -148,6 +263,30 @@ class ResultadoTamizajeController extends Controller
                 } else {
                     $where .= " AND nombre_completo LIKE ?";
                     $params[] = '%' . $searchTrim . '%';
+                }
+            }
+
+            // Filtros por DIRESA/GERESA/DIRIS, INSTITUCIÓN o Departamento/Provincia/Distrito
+            if ($searchTipo === 'diresa_geresa_diris' && $filtroDiresa !== null && $filtroDiresa !== '') {
+                $where .= " AND diresa_geresa_diris = ?";
+                $params[] = $filtroDiresa;
+            }
+            if ($searchTipo === 'institucion' && $filtroInstitucion !== null && $filtroInstitucion !== '') {
+                $where .= " AND institucion = ?";
+                $params[] = $filtroInstitucion;
+            }
+            if ($searchTipo === 'departamento_provincia_distrito') {
+                if ($filtroDepartamento !== null && $filtroDepartamento !== '') {
+                    $where .= " AND departamento = ?";
+                    $params[] = $filtroDepartamento;
+                }
+                if ($filtroProvincia !== null && $filtroProvincia !== '') {
+                    $where .= " AND provincia = ?";
+                    $params[] = $filtroProvincia;
+                }
+                if ($filtroDistrito !== null && $filtroDistrito !== '') {
+                    $where .= " AND distrito = ?";
+                    $params[] = $filtroDistrito;
                 }
             }
 
@@ -326,7 +465,7 @@ class ResultadoTamizajeController extends Controller
                         s.[APELLIDOS Y NOMBRES] as nombre_completo,
                         s.NumeroDocumento as dni,
                         s.Email as email
-                    FROM serumista_remunerados s
+                    FROM serumista_equivalentes_remunerados s
                     LEFT JOIN usuarios u ON s.CMP = u.cmp AND u.estado = 1
                     WHERE s.NumeroDocumento = ? OR s.CMP = ?";
 
@@ -453,10 +592,15 @@ class ResultadoTamizajeController extends Controller
         $search = $request->get('search');
         $searchTipo = $request->get('search_tipo', 'nombres');
         $idProceso = $request->get('id_proceso');
-        return $this->generarExcel(null, $search, $idProceso, null, $searchTipo);
+        $filtroDiresa = $request->get('filtro_diresa_geresa_diris');
+        $filtroInstitucion = $request->get('filtro_institucion');
+        $filtroDepartamento = $request->get('filtro_departamento');
+        $filtroProvincia = $request->get('filtro_provincia');
+        $filtroDistrito = $request->get('filtro_distrito');
+        return $this->generarExcel(null, $search, $idProceso, null, $searchTipo, $filtroDiresa, $filtroInstitucion, $filtroDepartamento, $filtroProvincia, $filtroDistrito);
     }
 
-    private function generarExcel($dni = null, $search = null, $idProceso = null, $cmp = null, $searchTipo = 'nombres')
+    private function generarExcel($dni = null, $search = null, $idProceso = null, $cmp = null, $searchTipo = 'nombres', $filtroDiresa = null, $filtroInstitucion = null, $filtroDepartamento = null, $filtroProvincia = null, $filtroDistrito = null)
     {
         try {
             $proceso = null;
@@ -612,7 +756,7 @@ class ResultadoTamizajeController extends Controller
                 $searchDigits = preg_replace('/\D/', '', $searchTrim);
                 $searchOk = $searchOk && strlen($searchDigits) >= 8;
             }
-            if ($searchOk) {
+            if ($searchOk && in_array($searchTipo, ['nombres', 'cmp', 'celular'])) {
                 if ($searchTipo === 'celular') {
                     $searchDigits = preg_replace('/\D/', '', $searchTrim);
                     if ($searchDigits !== '') {
@@ -625,6 +769,29 @@ class ResultadoTamizajeController extends Controller
                 } else {
                     $sql .= " AND (COALESCE(s.[APELLIDOS Y NOMBRES], u.nombre_completo) LIKE ?)";
                     $params[] = '%' . $searchTrim . '%';
+                }
+            }
+
+            if ($searchTipo === 'diresa_geresa_diris' && $filtroDiresa !== null && $filtroDiresa !== '') {
+                $sql .= " AND LTRIM(RTRIM(CAST(s.DIRESA_GERESA_DIRIS AS NVARCHAR(255)))) = ?";
+                $params[] = $filtroDiresa;
+            }
+            if ($searchTipo === 'institucion' && $filtroInstitucion !== null && $filtroInstitucion !== '') {
+                $sql .= " AND LTRIM(RTRIM(CAST(s.INSTITUCION AS NVARCHAR(255)))) = ?";
+                $params[] = $filtroInstitucion;
+            }
+            if ($searchTipo === 'departamento_provincia_distrito') {
+                if ($filtroDepartamento !== null && $filtroDepartamento !== '') {
+                    $sql .= " AND LTRIM(RTRIM(CAST(s.DEPARTAMENTO AS NVARCHAR(255)))) = ?";
+                    $params[] = $filtroDepartamento;
+                }
+                if ($filtroProvincia !== null && $filtroProvincia !== '') {
+                    $sql .= " AND LTRIM(RTRIM(CAST(s.PROVINCIA AS NVARCHAR(255)))) = ?";
+                    $params[] = $filtroProvincia;
+                }
+                if ($filtroDistrito !== null && $filtroDistrito !== '') {
+                    $sql .= " AND LTRIM(RTRIM(CAST(s.DISTRITO AS NVARCHAR(255)))) = ?";
+                    $params[] = $filtroDistrito;
                 }
             }
 

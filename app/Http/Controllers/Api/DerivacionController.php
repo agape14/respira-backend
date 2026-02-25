@@ -18,7 +18,7 @@ class DerivacionController extends Controller
 {
     private function getTableName($entidad)
     {
-        return $entidad === 'MINSA' ? 'serumista_equivalentes_remunerados' : 'serumista_remunerados';
+        return $entidad === 'MINSA' ? 'serumista_equivalentes_remunerados' : 'serumista_equivalentes_remunerados';
     }
 
     private function getBaseQuery($entidad)
@@ -34,7 +34,7 @@ class DerivacionController extends Controller
             ->where('usuarios.estado', 1);
 
         if ($entidad === 'ESSALUD') {
-            // ESSALUD: Incluir los que están en serumista_remunerados
+            // ESSALUD: Incluir los que están en serumista_equivalentes_remunerados
             // Y también los que NO están en serumista_equivalentes (MINSA)
             $query->where(function($q) use ($tableName) {
                 // Están en tabla ESSALUD
@@ -48,15 +48,7 @@ class DerivacionController extends Controller
             });
         } elseif ($entidad === 'MINSA') {
             // MINSA: Solo los que están en serumista_equivalentes_remunerados
-            // y NO están en serumista_remunerados
             $query->whereNotNull("{$tableName}.CMP");
-
-            // Excluir los que están en ESSALUD (remunerados)
-            $query->whereNotExists(function ($sub) {
-                $sub->select(DB::raw(1))
-                    ->from('serumista_remunerados')
-                    ->whereColumn('serumista_remunerados.CMP', 'usuarios.cmp');
-            });
         }
 
         return $query;
@@ -295,7 +287,7 @@ class DerivacionController extends Controller
             // Obtener la entidad del paciente para registrarla
             $tableName = $request->query('entidad') === 'MINSA'
                 ? 'serumista_equivalentes_remunerados'
-                : 'serumista_remunerados';
+                : 'serumista_equivalentes_remunerados';
 
             $serumista = DB::table($tableName)
                 ->join('usuarios', "{$tableName}.CMP", '=', 'usuarios.cmp')

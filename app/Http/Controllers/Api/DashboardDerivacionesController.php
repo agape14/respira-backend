@@ -289,22 +289,13 @@ class DashboardDerivacionesController extends Controller
      */
     private function getHighRiskCountByEntity($entidad, $filteredUserIds = null)
     {
-        $tableName = $entidad === 'MINSA' ? 'serumista_equivalentes_remunerados' : 'serumista_remunerados';
+        $tableName = $entidad === 'MINSA' ? 'serumista_equivalentes_remunerados' : 'serumista_equivalentes_remunerados';
 
         // Construir query base (misma lógica que DerivacionController::getBaseQuery)
         // Usar CAST para asegurar que el join funcione correctamente con SQL Server
         $query = DB::table($tableName)
             ->join('usuarios', DB::raw("CAST({$tableName}.CMP AS VARCHAR)"), '=', DB::raw('CAST(usuarios.cmp AS VARCHAR)'))
             ->where('usuarios.estado', 1);
-
-        // Para MINSA, excluir los que ya están en ESSALUD
-        if ($entidad === 'MINSA') {
-            $query->whereNotExists(function ($sub) {
-                $sub->select(DB::raw(1))
-                    ->from('serumista_remunerados')
-                    ->whereColumn('serumista_remunerados.CMP', 'serumista_equivalentes_remunerados.CMP');
-            });
-        }
 
         // Aplicar filtro de usuarios si existe
         if ($filteredUserIds !== null) {

@@ -19,21 +19,10 @@ class DashboardController extends Controller
         $userId = optional($request->user())->id ?? 'anon';
 
         $departamentos = Cache::remember("dashboard:departamentos:user:{$userId}", now()->addHours(8), function () {
-            $q1 = DB::table('serumista_remunerados')
+            return DB::table('serumista_equivalentes_remunerados')
                 ->selectRaw("LTRIM(RTRIM(DEPARTAMENTO)) as departamento")
                 ->whereNotNull('DEPARTAMENTO')
-                ->where('DEPARTAMENTO', '<>', '');
-
-            $q2 = DB::table('serumista_equivalentes_remunerados')
-                ->selectRaw("LTRIM(RTRIM(DEPARTAMENTO)) as departamento")
-                ->whereNotNull('DEPARTAMENTO')
-                ->where('DEPARTAMENTO', '<>', '');
-
-            $union = $q1->union($q2);
-
-            return DB::query()
-                ->fromSub($union, 'd')
-                ->select('departamento')
+                ->where('DEPARTAMENTO', '<>', '')
                 ->distinct()
                 ->orderBy('departamento')
                 ->pluck('departamento')
@@ -589,8 +578,7 @@ class DashboardController extends Controller
                 'no_clasificados' => $accedieronNoClasificados,
             ]);
 
-            // Tamizados por Modalidad - Usar lógica del query: usuarios con evaluaciones,
-            // REMUNERADOS= en serumista_remunerados, EQUIVALENTES= en serumista_equivalentes MODALIDAD=EQUIVALENTES (no en remunerados)
+            // Tamizados por Modalidad - serumista_equivalentes_remunerados: REMUNERADOS y EQUIVALENTES por MODALIDAD
             $stepStart = microtime(true);
             $tamizadosCounts = $this->getTamizadosCounts($filteredUserIds, $departamento, $institucion, $modalidad, $dateRange, $applyDateRange, $applyDateRangeNvarchar);
             $tamizadosRemunerados = $tamizadosCounts['remunerados'];
@@ -1573,8 +1561,8 @@ class DashboardController extends Controller
     /**
      * Obtener conteos de tamizados (TOTAL, REMUNERADOS y EQUIVALENTES).
      * TOTAL = todos los usuarios (estado=1) con al menos una evaluación.
-     * REMUNERADOS = tamizados con CMP en serumista_remunerados.
-     * EQUIVALENTES = tamizados con CMP en serumista_equivalentes MODALIDAD=EQUIVALENTES, excluyendo remunerados.
+     * REMUNERADOS = tamizados con CMP en serumista_equivalentes_remunerados y MODALIDAD=REMUNERADOS.
+     * EQUIVALENTES = tamizados con CMP en serumista_equivalentes_remunerados y MODALIDAD=EQUIVALENTES.
      */
     private function getTamizadosCounts($filteredUserIds, $departamento, $institucion, $modalidad, $dateRange, $applyDateRange, $applyDateRangeNvarchar)
     {
@@ -1621,9 +1609,12 @@ class DashboardController extends Controller
             ->join('usuarios as u', 't.user_id', '=', 'u.id')
             ->where('u.estado', 1);
 
+        $serTable = 'serumista_equivalentes_remunerados';
+
         if ($modalidad === 'REMUNERADO') {
             $tamizadosRemunerados = (clone $baseJoin)
-                ->join('serumista_remunerados as sr', DB::raw('CAST(u.cmp AS VARCHAR)'), '=', DB::raw('CAST(sr.CMP AS VARCHAR)'))
+                ->join("{$serTable} as sr", DB::raw('CAST(u.cmp AS VARCHAR)'), '=', DB::raw('CAST(sr.CMP AS VARCHAR)'))
+                ->where('sr.MODALIDAD', 'REMUNERADOS')
                 ->when($departamento, fn ($q) => $q->where('sr.DEPARTAMENTO', $departamento))
                 ->when($institucion, fn ($q) => $q->where('sr.INSTITUCION', 'LIKE', '%' . $institucion . '%'))
                 ->count();
@@ -1632,13 +1623,8 @@ class DashboardController extends Controller
 
         if ($modalidad === 'EQUIVALENTE') {
             $tamizadosEquivalentes = (clone $baseJoin)
-                ->join('serumista_equivalentes_remunerados as se', DB::raw('CAST(u.cmp AS VARCHAR)'), '=', DB::raw('CAST(se.CMP AS VARCHAR)'))
+                ->join("{$serTable} as se", DB::raw('CAST(u.cmp AS VARCHAR)'), '=', DB::raw('CAST(se.CMP AS VARCHAR)'))
                 ->where('se.MODALIDAD', 'EQUIVALENTES')
-                ->whereNotExists(function ($sub) {
-                    $sub->select(DB::raw(1))
-                        ->from('serumista_remunerados as sr2')
-                        ->whereRaw('CAST(sr2.CMP AS VARCHAR(20)) = CAST(se.CMP AS VARCHAR(20))');
-                })
                 ->when($departamento, fn ($q) => $q->where('se.DEPARTAMENTO', $departamento))
                 ->when($institucion, fn ($q) => $q->where('se.INSTITUCION', 'LIKE', '%' . $institucion . '%'))
                 ->count();
@@ -1646,20 +1632,16 @@ class DashboardController extends Controller
         }
 
         $tamizadosRemunerados = (int) ((clone $baseJoin)
-            ->join('serumista_remunerados as sr', DB::raw('CAST(u.cmp AS VARCHAR)'), '=', DB::raw('CAST(sr.CMP AS VARCHAR)'))
+            ->join("{$serTable} as sr", DB::raw('CAST(u.cmp AS VARCHAR)'), '=', DB::raw('CAST(sr.CMP AS VARCHAR)'))
+            ->where('sr.MODALIDAD', 'REMUNERADOS')
             ->when($departamento, fn ($q) => $q->where('sr.DEPARTAMENTO', $departamento))
             ->when($institucion, fn ($q) => $q->where('sr.INSTITUCION', 'LIKE', '%' . $institucion . '%'))
             ->selectRaw('COUNT(DISTINCT t.user_id) as cnt')
             ->value('cnt') ?? 0);
 
         $tamizadosEquivalentes = (int) ((clone $baseJoin)
-            ->join('serumista_equivalentes_remunerados as se', DB::raw('CAST(u.cmp AS VARCHAR)'), '=', DB::raw('CAST(se.CMP AS VARCHAR)'))
+            ->join("{$serTable} as se", DB::raw('CAST(u.cmp AS VARCHAR)'), '=', DB::raw('CAST(se.CMP AS VARCHAR)'))
             ->where('se.MODALIDAD', 'EQUIVALENTES')
-            ->whereNotExists(function ($sub) {
-                $sub->select(DB::raw(1))
-                    ->from('serumista_remunerados as sr2')
-                    ->whereRaw('CAST(sr2.CMP AS VARCHAR(20)) = CAST(se.CMP AS VARCHAR(20))');
-            })
             ->when($departamento, fn ($q) => $q->where('se.DEPARTAMENTO', $departamento))
             ->when($institucion, fn ($q) => $q->where('se.INSTITUCION', 'LIKE', '%' . $institucion . '%'))
             ->selectRaw('COUNT(DISTINCT t.user_id) as cnt')
@@ -1670,12 +1652,13 @@ class DashboardController extends Controller
 
     /**
      * Obtener conteo de pacientes de alto riesgo por entidad (misma lógica que DerivacionController)
-     * ESSALUD: usuarios en serumista_remunerados O no en serumista_equivalentes (incluye todos los tamizados/derivados)
-     * MINSA: usuarios en serumista_equivalentes excluyendo remunerados
+     * Usa serumista_equivalentes_remunerados para ambas entidades.
+     * ESSALUD: usuarios en tabla con MODALIDAD=REMUNERADOS o no están en la tabla
+     * MINSA: usuarios en tabla con MODALIDAD=EQUIVALENTES
      */
     private function getHighRiskCountByEntity($entidad, $filteredUserIds = null)
     {
-        $tableName = $entidad === 'MINSA' ? 'serumista_equivalentes_remunerados' : 'serumista_remunerados';
+        $tableName = 'serumista_equivalentes_remunerados';
 
         // Misma base que DerivacionController::getBaseQuery: partir desde usuarios
         $query = DB::table('usuarios')
@@ -1684,20 +1667,17 @@ class DashboardController extends Controller
 
         if ($entidad === 'ESSALUD') {
             $query->where(function ($q) use ($tableName) {
-                $q->whereNotNull("{$tableName}.CMP")
-                    ->orWhereNotExists(function ($sub) {
-                        $sub->select(DB::raw(1))
-                            ->from('serumista_equivalentes_remunerados')
-                            ->whereRaw('CAST(serumista_equivalentes_remunerados.CMP AS VARCHAR) = CAST(usuarios.cmp AS VARCHAR)');
-                    });
+                $q->where(function ($q2) use ($tableName) {
+                    $q2->whereNotNull("{$tableName}.CMP")->where("{$tableName}.MODALIDAD", 'REMUNERADOS');
+                })->orWhereNotExists(function ($sub) {
+                    $sub->select(DB::raw(1))
+                        ->from('serumista_equivalentes_remunerados as ser')
+                        ->whereRaw('CAST(ser.CMP AS VARCHAR) = CAST(usuarios.cmp AS VARCHAR)');
+                });
             });
         } elseif ($entidad === 'MINSA') {
             $query->whereNotNull("{$tableName}.CMP")
-                ->whereNotExists(function ($sub) {
-                    $sub->select(DB::raw(1))
-                        ->from('serumista_remunerados')
-                        ->whereRaw('CAST(serumista_remunerados.CMP AS VARCHAR) = CAST(usuarios.cmp AS VARCHAR)');
-                });
+                ->where("{$tableName}.MODALIDAD", 'EQUIVALENTES');
         }
 
         // Aplicar filtro de usuarios si existe (Dashboard con departamento/institución/modalidad)
@@ -1778,25 +1758,15 @@ class DashboardController extends Controller
             $union = $uAsq->union($uPhq)->union($uGad)->union($uMbi)->union($uAud);
             $tamizadosSub = DB::query()->fromSub($union, 'tu')->select('user_id')->distinct();
 
+            // No clasificados = tamizados cuyo CMP no está en serumista_equivalentes_remunerados
             $query = DB::query()
                 ->fromSub($tamizadosSub, 't')
                 ->join('usuarios as u', 't.user_id', '=', 'u.id')
                 ->where('u.estado', 1)
                 ->whereNotExists(function ($sub) {
                     $sub->select(DB::raw(1))
-                        ->from('serumista_remunerados as sr')
-                        ->whereRaw('CAST(u.cmp AS VARCHAR) = CAST(sr.CMP AS VARCHAR)');
-                })
-                ->whereNotExists(function ($sub) {
-                    $sub->select(DB::raw(1))
-                        ->from('serumista_equivalentes_remunerados as se')
-                        ->whereRaw('CAST(u.cmp AS VARCHAR) = CAST(se.CMP AS VARCHAR)')
-                        ->where('se.MODALIDAD', 'EQUIVALENTES')
-                        ->whereNotExists(function ($s2) {
-                            $s2->select(DB::raw(1))
-                                ->from('serumista_remunerados as sr2')
-                                ->whereRaw('CAST(sr2.CMP AS VARCHAR) = CAST(se.CMP AS VARCHAR)');
-                        });
+                        ->from('serumista_equivalentes_remunerados as ser')
+                        ->whereRaw('CAST(u.cmp AS VARCHAR) = CAST(ser.CMP AS VARCHAR)');
                 })
                 ->select([
                     'u.id',

@@ -383,7 +383,7 @@ class ProtocoloAtencionController extends Controller
                 $dni = $cita->paciente->nombre_usuario;
 
                 // Verificar si está en plaza remunerada (ESSALUD)
-                $esRemunerado = DB::connection('sqlsrv')->table('serumista_remunerados')
+                $esRemunerado = DB::connection('sqlsrv')->table('serumista_equivalentes_remunerados')
                     ->where('CMP', $cmp)
                     ->orWhere('NumeroDocumento', $dni)
                     ->exists();
@@ -1307,7 +1307,7 @@ class ProtocoloAtencionController extends Controller
             $dni = $paciente->nombre_usuario;
 
             // Verificar si está en plaza remunerada (ESSALUD)
-            $esRemunerado = DB::connection('sqlsrv')->table('serumista_remunerados')
+            $esRemunerado = DB::connection('sqlsrv')->table('serumista_equivalentes_remunerados')
                 ->where('CMP', $cmp)
                 ->orWhere('NumeroDocumento', $dni)
                 ->exists();

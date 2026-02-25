@@ -96,8 +96,8 @@ class NotificationService
 
     private function obtenerEmailSerumista($usuario)
     {
-        // Intentar buscar en serumista_remunerados por CMP
-        $serumista = DB::connection('sqlsrv')->table('serumista_remunerados')
+        // Intentar buscar en serumista_equivalentes_remunerados por CMP
+        $serumista = DB::connection('sqlsrv')->table('serumista_equivalentes_remunerados')
             ->where('CMP', $usuario->cmp)
             ->first();
 
@@ -116,7 +116,7 @@ class NotificationService
 
         // Si no se encuentra por CMP, intentar por nombre_usuario (asumiendo que es el email)
         // O buscar por nombre_usuario en las tablas de serumistas
-        $serumista = DB::connection('sqlsrv')->table('serumista_remunerados')
+        $serumista = DB::connection('sqlsrv')->table('serumista_equivalentes_remunerados')
             ->where('Email', $usuario->nombre_usuario)
             ->first();
 

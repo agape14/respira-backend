@@ -49,10 +49,10 @@ Route::get('/debug/derivaciones-atencion-sample', function () {
 Route::get('/debug/serumistas-counts', function () {
     abort_unless(app()->environment('local'), 404);
 
-    $remCount = DB::table('serumista_remunerados')->count();
+    $remCount = DB::table('serumista_equivalentes_remunerados')->count();
     $eqCount = DB::table('serumista_equivalentes_remunerados')->count();
 
-    $remModalidades = DB::table('serumista_remunerados')
+    $remModalidades = DB::table('serumista_equivalentes_remunerados')
         ->selectRaw('TOP 20 MODALIDAD')
         ->whereNotNull('MODALIDAD')
         ->groupBy('MODALIDAD')
@@ -67,7 +67,7 @@ Route::get('/debug/serumistas-counts', function () {
         ->pluck('MODALIDAD');
 
     return response()->json([
-        'serumista_remunerados' => [
+        'serumista_equivalentes_remunerados' => [
             'count' => $remCount,
             'modalidades' => $remModalidades,
         ],
@@ -185,7 +185,7 @@ Route::get('/debug/check-usuarios', function() {
 
 Route::get('/debug/check-serumistas', function() {
     try {
-        $serumistas = DB::connection('sqlsrv')->select("SELECT TOP 3 * FROM serumista_remunerados");
+        $serumistas = DB::connection('sqlsrv')->select("SELECT TOP 3 * FROM serumista_equivalentes_remunerados");
         return response()->json([
             'total' => count($serumistas),
             'sample' => $serumistas,
@@ -211,7 +211,7 @@ Route::get('/debug/check-join', function() {
                 (SELECT TOP 1 resultado FROM asq5_responses WHERE user_id = u.id ORDER BY id DESC) AS asq_resultado,
                 (SELECT TOP 1 riesgo FROM phq9_responses WHERE user_id = u.id ORDER BY id DESC) AS phq_riesgo
 
-            FROM serumista_remunerados s
+            FROM serumista_equivalentes_remunerados s
             LEFT JOIN usuarios u ON LOWER(s.Email) = LOWER(u.nombre_usuario) AND u.perfil_id = 4 AND u.estado = 1
         ");
         return response()->json(['total' => count($result), 'data' => $result]);
@@ -281,7 +281,7 @@ Route::get('/debug/check-usuarios-con-evaluaciones', function() {
                 (SELECT COUNT(*) FROM audit_responses WHERE user_id = u.id) as tiene_audit
 
             FROM usuarios u
-            LEFT JOIN serumista_remunerados s ON LOWER(s.Email) = LOWER(u.nombre_usuario)
+            LEFT JOIN serumista_equivalentes_remunerados s ON LOWER(s.Email) = LOWER(u.nombre_usuario)
             WHERE u.id IN (573, 572, 515, 195, 196, 197)
             ORDER BY u.id DESC
         ");
@@ -314,7 +314,7 @@ Route::get('/debug/test-relacion-cmp', function() {
                 (SELECT COUNT(*) FROM asq5_responses WHERE user_id = u.id) as tiene_asq,
                 (SELECT COUNT(*) FROM phq9_responses WHERE user_id = u.id) as tiene_phq
 
-            FROM serumista_remunerados s
+            FROM serumista_equivalentes_remunerados s
             LEFT JOIN usuarios u ON s.CMP = u.cmp
             WHERE u.id IS NOT NULL
         ");
@@ -362,7 +362,7 @@ Route::get('/debug/test-serumista-con-evaluaciones', function() {
                 -- AUDIT - Últimos datos
                 (SELECT TOP 1 riesgo FROM audit_responses WHERE user_id = u.id ORDER BY id DESC) AS audit
 
-            FROM serumista_remunerados s
+            FROM serumista_equivalentes_remunerados s
             LEFT JOIN usuarios u ON s.CMP = u.cmp AND u.estado = 1
             WHERE s.CMP IN ('111703', '104443', '104162', '102727', '103868', '103970', '104762')
         ");
@@ -394,6 +394,9 @@ Route::middleware(['auth:sanctum'])->group(function () {
     Route::get('/dashboard-derivaciones/derivaciones-tamizaje', [DashboardDerivacionesController::class, 'derivacionesTamizaje']);
 
     // Tamizaje
+    Route::get('/tamizajes-filtros', [ResultadoTamizajeController::class, 'filtros']);
+    Route::get('/tamizajes-filtros/provincias', [ResultadoTamizajeController::class, 'filtrosProvincias']);
+    Route::get('/tamizajes-filtros/distritos', [ResultadoTamizajeController::class, 'filtrosDistritos']);
     Route::get('/tamizajes/exportar-todo', [ResultadoTamizajeController::class, 'exportarTodo']);
     Route::get('/tamizajes/exportar/{dni}', [ResultadoTamizajeController::class, 'exportarIndividual']);
     Route::get('/tamizajes', [ResultadoTamizajeController::class, 'index']);
