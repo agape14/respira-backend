@@ -34,7 +34,8 @@ class Cita extends Model
         'video_enlace',
         'user_id',
         'estado',
-        'id_sesion'
+        'id_sesion',
+        'estado_observacion'
     ];
 
     protected $casts = [

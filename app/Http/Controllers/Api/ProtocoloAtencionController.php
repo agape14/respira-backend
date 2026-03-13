@@ -1124,12 +1124,15 @@ class ProtocoloAtencionController extends Controller
 
             $cita = Cita::findOrFail($request->cita_id);
 
+            $observacion = $request->input('observacion', '');
+
             // Usar Query Builder directamente para evitar problemas con SQL Server y timestamps
             DB::connection('sqlsrv')
                 ->table('citas')
                 ->where('id', $cita->id)
                 ->update([
                     'estado' => 4,
+                    'estado_observacion' => $observacion,
                     'updated_at' => DB::raw("GETDATE()")
                 ]);
 
@@ -1161,12 +1164,15 @@ class ProtocoloAtencionController extends Controller
 
             $cita = Cita::findOrFail($request->cita_id);
 
+            $observacion = $request->input('observacion', '');
+
             // Usar Query Builder directamente para evitar problemas con SQL Server y timestamps
             DB::connection('sqlsrv')
                 ->table('citas')
                 ->where('id', $cita->id)
                 ->update([
                     'estado' => 3,
+                    'estado_observacion' => $observacion,
                     'updated_at' => DB::raw("GETDATE()")
                 ]);
 
