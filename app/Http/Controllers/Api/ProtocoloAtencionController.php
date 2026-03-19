@@ -1133,6 +1133,7 @@ class ProtocoloAtencionController extends Controller
                 ->update([
                     'estado' => 4,
                     'estado_observacion' => $observacion,
+                    'cancelado_at' => DB::raw("GETDATE()"),
                     'updated_at' => DB::raw("GETDATE()")
                 ]);
 
@@ -1173,6 +1174,7 @@ class ProtocoloAtencionController extends Controller
                 ->update([
                     'estado' => 3,
                     'estado_observacion' => $observacion,
+                    'no_presento_at' => DB::raw("GETDATE()"),
                     'updated_at' => DB::raw("GETDATE()")
                 ]);
 

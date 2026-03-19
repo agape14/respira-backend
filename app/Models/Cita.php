@@ -35,7 +35,9 @@ class Cita extends Model
         'user_id',
         'estado',
         'id_sesion',
-        'estado_observacion'
+        'estado_observacion',
+        'cancelado_at',
+        'no_presento_at'
     ];
 
     protected $casts = [
