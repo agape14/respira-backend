@@ -93,6 +93,11 @@ class Usuario extends Authenticatable
         return $this->hasMany(GadResponse::class, 'user_id', 'id');
     }
 
+    public function mbiResponses()
+    {
+        return $this->hasMany(MbiResponse::class, 'user_id', 'id');
+    }
+
     /**
      * Relación con turnos (shifts)
      */
