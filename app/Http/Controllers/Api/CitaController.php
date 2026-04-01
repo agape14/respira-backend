@@ -26,7 +26,7 @@ class CitaController extends Controller
                 ->table('turnos as t')
                 ->leftJoin('citas as c', function($join) {
                     $join->on('t.id', '=', 'c.turno_id')
-                         ->where('c.estado', '!=', 3); // 3 = Cancelado (numeric value)
+                         ->where('c.estado', '!=', 4); // 4 = Cancelado (3 = No se presentó)
                 })
                 ->leftJoin('usuarios as u', 't.medico_id', '=', 'u.id')
                 ->leftJoin('usuarios as p', 'c.paciente_id', '=', 'p.id')
@@ -293,7 +293,7 @@ class CitaController extends Controller
                 ->table('turnos as t')
                 ->leftJoin('citas as c', function($join) {
                     $join->on('t.id', '=', 'c.turno_id')
-                         ->where('c.estado', '!=', 3); // 3 = Cancelado (numeric)
+                         ->where('c.estado', '!=', 4); // 4 = Cancelado (3 = No se presentó)
                 })
                 ->leftJoin('usuarios as u', 't.medico_id', '=', 'u.id')
                 ->leftJoin('usuarios as p', 'c.paciente_id', '=', 'p.id')
@@ -392,7 +392,7 @@ class CitaController extends Controller
 
             // Verificar si el turno tiene una cita agendada
             $tieneCita = Cita::where('turno_id', $id)
-                ->where('estado', '!=', 3) // 3 = Cancelado (numeric value)
+                ->where('estado', '!=', 4) // 4 = Cancelado
                 ->exists();
 
             if ($tieneCita) {
@@ -433,7 +433,7 @@ class CitaController extends Controller
                 ->table('turnos as t')
                 ->leftJoin('citas as c', function($join) {
                     $join->on('t.id', '=', 'c.turno_id')
-                         ->where('c.estado', '!=', 3); // 3 = Cancelado
+                         ->where('c.estado', '!=', 4); // 4 = Cancelado
                 })
                 ->whereNull('c.id'); // Solo turnos sin citas agendadas
 
@@ -479,7 +479,7 @@ class CitaController extends Controller
                 ->table('turnos as t')
                 ->leftJoin('citas as c', function($join) {
                     $join->on('t.id', '=', 'c.turno_id')
-                         ->where('c.estado', '!=', 3); // 3 = Cancelado
+                         ->where('c.estado', '!=', 4); // 4 = Cancelado
                 })
                 ->whereNull('c.id'); // Solo turnos sin citas agendadas
 
@@ -631,7 +631,7 @@ class CitaController extends Controller
 
             // Verificar que el turno no esté ocupado
             $citaExistente = Cita::where('turno_id', $request->turno_id)
-                ->where('estado', '!=', 3) // 3 = Cancelado (numeric)
+                ->where('estado', '!=', 4) // 4 = Cancelado
                 ->first();
 
             if ($citaExistente) {
@@ -644,7 +644,7 @@ class CitaController extends Controller
             // Verificar que el paciente no tenga otra cita en ese horario (solapamiento)
             $citaSolapada = Cita::where('paciente_id', $request->paciente_id)
                 ->where('fecha', $turno->fecha)
-                ->where('estado', '!=', 3) // Ignorar canceladas
+                ->where('estado', '!=', 4) // Ignorar canceladas
                 ->where(function ($query) use ($turno) {
                     $query->where('hora_inicio', '<', $turno->hora_fin)
                           ->where('hora_fin', '>', $turno->hora_inicio);

@@ -631,6 +631,7 @@ class ProtocoloAtencionController extends Controller
 
             // Verificar si el paciente ya tiene una cita en ese horario (Overlap)
             $overlap = Cita::where('paciente_id', $cita->paciente_id)
+                ->where('id', '!=', $cita->id)
                 ->where('estado', '!=', 4) // No cancelado
                 ->where('fecha', $nuevoTurno->fecha)
                 ->where(function ($q) use ($nuevoTurno) {
@@ -654,25 +655,38 @@ class ProtocoloAtencionController extends Controller
                 ], 422);
             }
 
-            // Crear nueva cita usando Query Builder para SQL Server
-            // Convertir fecha a formato SQL Server
+            // Crear nueva cita y cancelar la anterior en una sola transacción
             $fechaFormateada = Carbon::parse($nuevoTurno->fecha)->format('Y-m-d');
 
-            $nuevaCitaId = DB::connection('sqlsrv')
-                ->table('citas')
-                ->insertGetId([
-                    'paciente_id' => $cita->paciente_id,
-                    'medico_id' => $nuevoTurno->medico_id,
-                    'turno_id' => $nuevoTurno->id,
-                    'fecha' => $fechaFormateada,
-                    'hora_inicio' => $nuevoTurno->hora_inicio,
-                    'hora_fin' => $nuevoTurno->hora_fin,
-                    'estado' => 1, // Agendado
-                    'user_id' => $request->user()->id,
-                    'id_sesion' => $cita->id_sesion,
-                    'created_at' => DB::raw("GETDATE()"),
-                    'updated_at' => DB::raw("GETDATE()")
-                ]);
+            $nuevaCitaId = DB::connection('sqlsrv')->transaction(function () use ($request, $cita, $nuevoTurno, $fechaFormateada) {
+                $id = DB::connection('sqlsrv')
+                    ->table('citas')
+                    ->insertGetId([
+                        'paciente_id' => $cita->paciente_id,
+                        'medico_id' => $nuevoTurno->medico_id,
+                        'turno_id' => $nuevoTurno->id,
+                        'fecha' => $fechaFormateada,
+                        'hora_inicio' => $nuevoTurno->hora_inicio,
+                        'hora_fin' => $nuevoTurno->hora_fin,
+                        'estado' => 1, // Agendado
+                        'user_id' => $request->user()->id,
+                        'id_sesion' => $cita->id_sesion,
+                        'created_at' => DB::raw('GETDATE()'),
+                        'updated_at' => DB::raw('GETDATE()'),
+                    ]);
+
+                DB::connection('sqlsrv')
+                    ->table('citas')
+                    ->where('id', $cita->id)
+                    ->update([
+                        'estado' => 4,
+                        'estado_observacion' => 'Reprogramada',
+                        'cancelado_at' => DB::raw('GETDATE()'),
+                        'updated_at' => DB::raw('GETDATE()'),
+                    ]);
+
+                return $id;
+            });
 
             $nuevaCita = Cita::find($nuevaCitaId);
 
